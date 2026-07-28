@@ -1,0 +1,65 @@
+project:
+  name: iris_disease_detection
+  seed: 42
+
+paths:
+  raw_data: data/raw
+  processed_data: data/processed
+  augmented_data: data/augmented
+  outputs: outputs
+
+datasets:
+  odir5k:
+    folder: data/raw/ODIR-5K/ODIR-5K/ODIR-5K/Training Images
+    annotation_file: data/raw/ODIR-5K/full_df.csv
+    image_col: filename
+    label_cols: [N, D, G, C, A, H, M, O]
+  rfmid:
+    folder: data/raw/RFMiD/Training_Set/Training_Set/Training
+    annotation_file: data/raw/RFMiD/Training_Set/Training_Set/RFMiD_Training_Labels.csv
+    image_col: ID
+    label_cols: DR, MH, TSLN, DN, ARMD, MEM, SRS, ODC, ODE, ST, AION, PT, RT, RS, CRS, EDN, RPEC, MHL, RP, CWS, CB, ODPM, PRH, MNF, HR, CRAO, TD, CME, PTCR, CF, VH, MCA, VS, BRAO, PLQ, HPED, CL
+  jsiec:
+    folder: data/raw/JSIEC
+    annotation_file: data/raw/JSIEC/labels.csv
+    image_col: image_path
+    label_cols: label
+
+preprocessing:
+  image_size: 224
+  clahe_clip_limit: 2.0
+  clahe_grid_size: [8, 8]
+  normalize_mean: [0.485, 0.456, 0.406]   # ImageNet stats — works well for transfer learning
+  normalize_std: [0.229, 0.224, 0.225]
+
+augmentation:
+  horizontal_flip: true
+  vertical_flip: false
+  rotation_degrees: 15
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.1
+  gaussian_blur: true
+  random_crop: false
+
+training:
+  batch_size: 16             # Safe for RTX 3050 4GB VRAM
+  num_epochs: 50
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  early_stopping_patience: 8
+  train_split: 0.70
+  val_split: 0.15
+  test_split: 0.15
+  num_workers: 0             # 0 = main process (fixes Windows cv2 pickle error)
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  dropout: 0.4
+  threshold: 0.5             # Sigmoid threshold for multi-label prediction
+
+hardware:
+  device: cuda               # Falls back to cpu automatically
+  mixed_precision: true      # AMP — saves VRAM on RTX 3050
+  pin_memory: false          # Must be false when num_workers=0 on Windows

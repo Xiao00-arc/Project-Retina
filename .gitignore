@@ -1,0 +1,18 @@
+# Environments
+.env
+.venv
+env/
+venv/
+
+# Caches
+__pycache__/
+*.pyc
+
+# Data and Models
+data/
+outputs/
+*.pth
+*.pt
+
+# OS generated files
+.DS_Store
