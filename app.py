@@ -10,6 +10,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
+
 sys.path.insert(0, str(Path(__file__).parent))
 from src.model.ocunet import build_model
 from src.dataset.loader import load_config, load_label_map, get_transforms
@@ -131,6 +132,8 @@ HTML = f"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8"/>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
 <style>
 /* ── TOKENS ── */
 [data-theme="dark"]{{
@@ -335,8 +338,12 @@ input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
 .tab.on{{color:var(--ac);border-bottom-color:var(--ac)}}
 
 /* ── PERF / ARCH VIEWS ── */
-.view{{flex:1;overflow-y:auto;padding:1.2rem}}
-.view-hidden{{display:none}}
+.view {{
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem;
+    height: 100%;
+}}
 .sec-tag{{font-size:.72rem;font-weight:600;color:var(--ac);text-transform:uppercase;letter-spacing:.14em;margin-bottom:.3rem;font-family:'IBM Plex Mono',monospace}}
 .sec-title{{font-size:1.2rem;font-weight:700;color:var(--tx);letter-spacing:-.02em;margin-bottom:.8rem}}
 .metrics-g{{display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;margin-bottom:1rem}}
@@ -349,6 +356,51 @@ input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
 .arch-t::after{{content:'';flex:1;height:1px;background:var(--bd)}}
 .arch-i{{font-size:.84rem;color:var(--tx2);padding:4px 0;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:7px}}
 .arch-i::before{{content:'';width:3px;height:3px;background:var(--ac);border-radius:50%;flex-shrink:0}}
+/* ── REPORT UI ── */
+.report-section {{
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--bd);
+}}
+.rp-grid {{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}}
+.rp-input {{
+  width: 100%;
+  background: var(--bg1);
+  border: 1px solid var(--bd);
+  color: var(--tx);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 0.85rem;
+  outline: none;
+}}
+.rp-input:focus {{ border-color: var(--ac); }}
+textarea.rp-input {{ resize: vertical; min-height: 60px; }}
+.btn-dl {{
+  width: 100%;
+  background: var(--ac);
+  color: #ffffff;
+  border: none;
+  padding: 11px;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: 0.2s;
+  box-shadow: 0 2px 6px rgba(var(--acr), 0.25);
+}}
+.btn-dl:hover {{
+  filter: brightness(1.1);
+  box-shadow: 0 4px 12px rgba(var(--acr), 0.35);
+}}
 </style>
 </head>
 <body>
@@ -463,27 +515,44 @@ input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
 
       <!-- Diagnosis output -->
       <div class="diag-section">
-        <div class="empty-state" id="diag-empty">Upload a fundus image to begin analysis</div>
+        <div class="empty-state" id="diag-empty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:65vh; text-align:center; padding:2rem;">
+  <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.8;">👁️‍🗨️</div>
+  <div style="font-size: 1.1rem; font-weight: 600; color: var(--tx); margin-bottom: 0.4rem; letter-spacing:-0.01em;">Awaiting Retinal Fundus Image</div>
+  <div style="font-size: 0.85rem; color: var(--tx3); max-width: 320px; line-height: 1.4; margin-bottom: 1.5rem;">Upload an image on the left to initialize OcuNet multi-label classification and Grad-CAM attention localization.</div>
+  <div style="font-family:'IBM Plex Mono',monospace; font-size:0.7rem; color:var(--ac); background:rgba(var(--acr),0.08); border:1px solid rgba(var(--acr),0.2); padding:4px 12px; border-radius:4px; letter-spacing:0.06em;">SYSTEM READY · 46 CLASSES</div>
+</div>  
         <div id="diag-result" style="display:none">
           <div id="chips"></div>
           <div id="cb-wrap">
             <div class="rank-title">Disease Probability Ranking</div>
             <div id="cbars"></div>
           </div>
+          
+         <!-- NEW: REPORT GENERATION UI -->
+          <div class="report-section">
+            <div class="rank-title">📄 Clinical Report Generation</div>
+            <div class="rp-grid">
+              <input type="text" id="rp-patient" class="rp-input" placeholder="Patient ID / MRN" />
+              <select id="rp-eye" class="rp-input">
+                <option value="OD (Right Eye)">OD (Right Eye)</option>
+                <option value="OS (Left Eye)">OS (Left Eye)</option>
+                <option value="Bilateral">Bilateral</option>
+                <option value="Unknown">Unknown</option>
+              </select>
+            </div>
+            <textarea id="rp-notes" class="rp-input" placeholder="Doctor's Clinical Notes (Optional)"></textarea>
+            <button class="btn-dl" onclick="triggerPDF()" style="margin-top:0.8rem;">
+              📋 DOWNLOAD REPORT
+            </button>
+          </div>
+          <!-- END NEW UI -->
+
         </div>
       </div>
-
-      <!-- Stats bar -->
-      <div class="stats-section">
-        <div class="stat-cell"><div class="stat-v">{auc_val}</div><div class="stat-l">Macro AUC</div></div>
-        <div class="stat-cell"><div class="stat-v">25</div><div class="stat-l">Conditions</div></div>
-        <div class="stat-cell"><div class="stat-v">7,249</div><div class="stat-l">Train Images</div></div>
-      </div>
-
-    </div>
+    </div> <!-- <--- ADD THIS CLOSING TAG RIGHT HERE TO CLOSE tab-diagnosis -->
 
     <!-- ── PERFORMANCE TAB ── -->
-    <div id="tab-performance" class="view view-hidden">
+    <div id="tab-performance" class="view view-hidden" style="display:none;">
       <div class="sec-tag">Evaluation Results</div>
       <div class="sec-title">Model Performance</div>
       <div class="metrics-g">
@@ -492,12 +561,20 @@ input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
         <div class="mtile"><div class="mtile-v">{n_test}</div><div class="mtile-l">Test Images</div></div>
         <div class="mtile"><div class="mtile-v">25</div><div class="mtile-l">Diseases</div></div>
       </div>
-      {"<div style='margin-bottom:.8rem'><div style='font-size:.6rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;font-family:IBM Plex Mono,monospace'>Loss &amp; AUC Curves · 29 Epochs</div><img class='chart-img' src='data:image/png;base64," + cb + "' alt='curves'/></div>" if cb else ""}
-      {"<div><div style='font-size:.6rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;font-family:IBM Plex Mono,monospace'>Per-Disease AUC · Test Set</div><img class='chart-img' src='data:image/png;base64," + ab + "' alt='auc'/></div>" if ab else ""}
+      
+      <!-- Charts Block -->
+      <div style="margin-bottom:.8rem">
+        <div style="font-size:.6rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;font-family:IBM Plex Mono,monospace">Loss &amp; AUC Curves · 29 Epochs</div>
+        {"<img class='chart-img' src='data:image/png;base64," + cb + "' alt='curves'/>" if cb else ""}
+      </div>
+      <div>
+        <div style="font-size:.6rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;font-family:IBM Plex Mono,monospace">Per-Disease AUC · Test Set</div>
+        {"<img class='chart-img' src='data:image/png;base64," + ab + "' alt='auc'/>" if ab else ""}
+      </div>
     </div>
 
     <!-- ── ARCHITECTURE TAB ── -->
-    <div id="tab-architecture" class="view view-hidden">
+    <div id="tab-architecture" class="view view-hidden" style="display:none;">
       <div class="sec-tag">Technical Specification</div>
       <div class="sec-title">System Architecture</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.2rem">
@@ -538,16 +615,34 @@ function applyStoredTheme(){{
   }}catch(e){{}}
 }}
 
-function switchTab(name,el){{
-  ['diagnosis','performance','architecture'].forEach(t=>{{
-    document.getElementById('tab-'+t).style.display='none';
-    document.getElementById('tab-'+t).classList.add('view-hidden');
-  }});
-  const tab=document.getElementById('tab-'+name);
-  tab.style.display=name==='diagnosis'?'flex':'block';
-  tab.classList.remove('view-hidden');
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
-  if(el)el.classList.add('on');
+function switchTab(name, el) {{
+  // Update button highlights
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  if(el) el.classList.add('on');
+
+  // Grab the tab containers
+  const diagTab = document.getElementById('tab-diagnosis');
+  const perfTab = document.getElementById('tab-performance');
+  const archTab = document.getElementById('tab-architecture');
+
+  // Hide all explicitly using inline styles & classes
+  diagTab.style.display = 'none';
+  perfTab.style.display = 'none';
+  archTab.style.display = 'none';
+  
+  perfTab.classList.add('view-hidden');
+  archTab.classList.add('view-hidden');
+
+  // Show only the requested one
+  if (name === 'diagnosis') {{
+    diagTab.style.display = 'flex';
+  }} else if (name === 'performance') {{
+    perfTab.style.display = 'block';
+    perfTab.classList.remove('view-hidden');
+  }} else if (name === 'architecture') {{
+    archTab.style.display = 'block';
+    archTab.classList.remove('view-hidden');
+  }}
 }}
 
 function show(id,v){{const e=document.getElementById(id);if(e)e.style.display=v?'flex':'none'}}
@@ -575,7 +670,110 @@ function trigUp(){{
   const el=window.parent.document.querySelector('[data-testid="stFileUploader"] input[type="file"]');
   if(el){{el.style.cssText='display:block;opacity:0;position:absolute';el.click();}}
 }}
-
+function triggerPDF() {{
+  const {{ jsPDF }} = window.jspdf;
+  const doc = new jsPDF();
+  
+  // 1. Gather Inputs
+  const patientId = document.getElementById('rp-patient').value || "Unknown";
+  const eye = document.getElementById('rp-eye').value;
+  const notes = document.getElementById('rp-notes').value || "No additional clinical notes provided.";
+  
+  // 2. Header
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.setTextColor(0, 51, 102);
+  doc.text("OcuNet Diagnostics - Retinal Assessment Report", 14, 20);
+  
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(100, 100, 100);
+  doc.text("Generated on: " + new Date().toLocaleString() + " | Platform: Research Build v1.0", 14, 27);
+  doc.setDrawColor(0, 51, 102);
+  doc.line(14, 30, 196, 30);
+  
+  // 3. Metadata
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(0, 0, 0);
+  doc.text("Patient ID: ", 14, 40);
+  doc.setFont("helvetica", "normal");
+  doc.text(patientId, 38, 40);
+  
+  doc.setFont("helvetica", "bold");
+  doc.text("Eye Evaluated: ", 100, 40);
+  doc.setFont("helvetica", "normal");
+  doc.text(eye, 130, 40);
+  
+  // 4. Top 8 Findings Table
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(0, 51, 102);
+  doc.text("Diagnostic Findings (Top Probability Ranking)", 14, 52);
+  
+  // Grab predictions from your existing 'pr' (probabilities) and 'dn' (disease names) arrays
+  const topPreds = pr.map((p, i) => [dn[i], p]).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const tableBody = topPreds.map((arr, idx) => {{
+      const prob = arr[1];
+      const status = prob >= 0.65 ? "HIGH RISK" : (prob >= 0.30 ? "SUSPECT" : "LOW RISK");
+      return [(idx + 1).toString(), arr[0], (prob * 100).toFixed(1) + "%", status];
+  }});
+  
+  doc.autoTable({{
+      startY: 56,
+      head: [['Rank', 'Pathology / Condition', 'Confidence Score', 'Status Flag']],
+      body: tableBody,
+      theme: 'grid',
+      headStyles: {{ fillColor: [0, 51, 102] }},
+      styles: {{ fontSize: 9 }}
+  }});
+  
+  // 5. Visual Evidence (Images)
+  let finalY = doc.lastAutoTable.finalY || 56;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(0, 51, 102);
+  doc.text("Visual Interpretability (Grad-CAM Attention Overlay)", 14, finalY + 12);
+  
+  // Grab base64 image data straight from the HTML image tags
+  const origImg = document.getElementById('orig-img').src;
+  const overlayImg = document.getElementById('hm-v').src;
+  
+  if (origImg.length > 100) {{
+      doc.addImage(origImg, 'JPEG', 14, finalY + 16, 75, 75);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Original Fundus Image", 35, finalY + 95);
+  }}
+  if (overlayImg.length > 100) {{
+      doc.addImage(overlayImg, 'JPEG', 105, finalY + 16, 75, 75);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Grad-CAM Disease Localization", 120, finalY + 95);
+  }}
+  
+  // 6. Doctor's Notes
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(0, 51, 102);
+  doc.text("Clinician Notes & Observations", 14, finalY + 107);
+  
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(50, 50, 50);
+  const splitNotes = doc.splitTextToSize(notes, 180);
+  doc.text(splitNotes, 14, finalY + 115);
+  
+  // 7. Disclaimer
+  doc.setFontSize(8);
+  doc.setTextColor(150, 150, 150);
+  doc.text("Disclaimer: OcuNet is an AI-assisted decision support system designed for retinal screening. This report", 14, 282);
+  doc.text("must be reviewed and verified by a licensed clinician prior to diagnostic or therapeutic action.", 14, 286);
+  
+  // 8. Download
+  doc.save("OcuNet_Report_" + patientId + ".pdf");
+}}
 if(HR){{
   document.getElementById('drop-zone').style.display='none';
   document.getElementById('img-body').style.display='flex';
@@ -595,6 +793,10 @@ if(HR){{
   document.getElementById('img-info').textContent='{fn}';
   upd();
 }}
+// Force hide non-default views on initial page load
+document.getElementById('tab-performance').classList.add('view-hidden');
+document.getElementById('tab-architecture').classList.add('view-hidden');
+</script>
 </script>
 </body></html>"""
 

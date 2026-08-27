@@ -20,3 +20,4 @@ tqdm>=4.66.2
 # Explainability & UI
 grad-cam>=1.4.8
 streamlit>=1.32.0
+reportlab>=4.0.0
