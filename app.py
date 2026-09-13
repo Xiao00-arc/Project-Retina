@@ -98,6 +98,7 @@ f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
 uploaded = st.file_uploader("Choose Fundus Photograph", type=["jpg","jpeg","png"], key="fu")
+st.write("DEBUG - Uploaded file object:", uploaded)
 
 RD = {}
 if uploaded and model:
