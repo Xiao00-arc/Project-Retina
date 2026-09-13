@@ -821,4 +821,4 @@ document.getElementById('tab-architecture').classList.add('view-hidden');
 </script>
 </body></html>"""
 
-# components.html(HTML, height=870, scrolling=False)
+components.html(HTML, height=870, scrolling=False)
