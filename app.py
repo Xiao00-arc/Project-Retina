@@ -98,17 +98,20 @@ f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
 # Native file uploader outside the hidden iframe wall
-uploaded = st.file_uploader("Choose Fundus Photograph", type=["jpg","jpeg","png"], key="fu")
+# --- NATIVE STREAMLIT FILE UPLOADER & INFERENCE ENGINE ---
+st.markdown("---")
+col_up1, col_up2 = st.columns([1, 2])
+
+with col_up1:
+    uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fundus_upload")
 
 RD = {}
 if uploaded is not None:
-    if model is None:
-        st.error("⚠️ Model weights file (`ocunet_best.pth`) could not be loaded! Please check if the model file was successfully pushed to GitHub.")
-    else:
+    try:
         pil = Image.open(uploaded).convert("RGB")
         np_ = np.array(pil)
         
-        with st.spinner("Processing EfficientNet inference & Grad-CAM..."):
+        with st.spinner("Executing OcuNet EfficientNet inference & Grad-CAM..."):
             tensor, probs = run_inference(np_, model, config, device)
             o, h, v, tc = apply_gradcam(tensor, model, device, np_)
             
@@ -120,8 +123,16 @@ if uploaded is not None:
             "fn": uploaded.name, "fs": f"{uploaded.size // 1024}KB",
             "dim": f"{pil.size[0]}x{pil.size[1]}"
         }
-        st.success(f"Success! Top prediction: {RD['td']}")
-
+        
+        with col_up2:
+            st.success(f"Diagnosis Complete: **{RD['td']}**")
+            st.image(pil, caption=uploaded.name, width=250)
+            
+    except Exception as e:
+        st.error(f"Inference pipeline error: {str(e)}")
+else:
+    with col_up2:
+        st.info("👈 Please upload a retinal fundus image using the uploader on the left to initialize diagnostic analysis.")
 cb = file_b64("outputs/training_curves.png") if Path("outputs/training_curves.png").exists() else ""
 ab = file_b64("outputs/per_disease_auc.png") if Path("outputs/per_disease_auc.png").exists() else ""
 rj = json.dumps(RD)
