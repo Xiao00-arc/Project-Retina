@@ -98,28 +98,29 @@ f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
 # Native file uploader outside the hidden iframe wall
-uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
+uploaded = st.file_uploader("Choose Fundus Photograph", type=["jpg","jpeg","png"], key="fu")
 
 RD = {}
-if uploaded is not None and model is not None:
-    pil = Image.open(uploaded).convert("RGB")
-    np_ = np.array(pil)
-    
-    with st.spinner("Processing EfficientNet inference & Grad-CAM heatmaps..."):
-        tensor, probs = run_inference(np_, model, config, device)
-        o, h, v, tc = apply_gradcam(tensor, model, device, np_)
+if uploaded is not None:
+    if model is None:
+        st.error("⚠️ Model weights file (`ocunet_best.pth`) could not be loaded! Please check if the model file was successfully pushed to GitHub.")
+    else:
+        pil = Image.open(uploaded).convert("RGB")
+        np_ = np.array(pil)
         
-    RD = {
-        "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
-        "probs": [float(p) for p in probs],
-        "dn": [disease_names[i] for i in range(len(probs))],
-        "td": disease_names.get(tc, "Unknown"),
-        "fn": uploaded.name, "fs": f"{uploaded.size // 1024}KB",
-        "dim": f"{pil.size[0]}x{pil.size[1]}"
-    }
-    
-    # Natively show confirmation so you know it processed successfully
-    st.success(f"Successfully processed! Top prediction: {RD['td']}")
+        with st.spinner("Processing EfficientNet inference & Grad-CAM..."):
+            tensor, probs = run_inference(np_, model, config, device)
+            o, h, v, tc = apply_gradcam(tensor, model, device, np_)
+            
+        RD = {
+            "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
+            "probs": [float(p) for p in probs],
+            "dn": [disease_names[i] for i in range(len(probs))],
+            "td": disease_names.get(tc, "Unknown"),
+            "fn": uploaded.name, "fs": f"{uploaded.size // 1024}KB",
+            "dim": f"{pil.size[0]}x{pil.size[1]}"
+        }
+        st.success(f"Success! Top prediction: {RD['td']}")
 
 cb = file_b64("outputs/training_curves.png") if Path("outputs/training_curves.png").exists() else ""
 ab = file_b64("outputs/per_disease_auc.png") if Path("outputs/per_disease_auc.png").exists() else ""
