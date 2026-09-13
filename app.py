@@ -99,40 +99,41 @@ n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
 # Native file uploader outside the hidden iframe wall
 # --- NATIVE STREAMLIT FILE UPLOADER & INFERENCE ENGINE ---
-st.markdown("---")
-col_up1, col_up2 = st.columns([1, 2])
+uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
 
-with col_up1:
-    uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fundus_upload")
-
-RD = {}
-if uploaded is not None:
-    try:
-        pil = Image.open(uploaded).convert("RGB")
-        np_ = np.array(pil)
+if uploaded is not None and model is not None:
+    pil = Image.open(uploaded).convert("RGB")
+    np_ = np.array(pil)
+    
+    with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
+        tensor, probs = run_inference(np_, model, config, device)
+        o, h, v, tc = apply_gradcam(tensor, model, device, np_)
         
-        with st.spinner("Executing OcuNet EfficientNet inference & Grad-CAM..."):
-            tensor, probs = run_inference(np_, model, config, device)
-            o, h, v, tc = apply_gradcam(tensor, model, device, np_)
-            
-        RD = {
-            "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
-            "probs": [float(p) for p in probs],
-            "dn": [disease_names[i] for i in range(len(probs))],
-            "td": disease_names.get(tc, "Unknown"),
-            "fn": uploaded.name, "fs": f"{uploaded.size // 1024}KB",
-            "dim": f"{pil.size[0]}x{pil.size[1]}"
-        }
+    # Create a clean two-column layout for native display
+    col_img, col_res = st.columns(2, gap="large")
+    
+    with col_img:
+        st.markdown("### 📷 Input Fundus Image")
+        st.image(pil, caption=uploaded.name, use_column_width=True)
         
-        with col_up2:
-            st.success(f"Diagnosis Complete: **{RD['td']}**")
-            st.image(pil, caption=uploaded.name, width=250)
+        # If Grad-CAM heatmap array 'h' is generated, display it
+        if h is not None:
+            st.markdown("### 🔥 Grad-CAM Attention Map")
+            st.image(h, caption="Disease Localization Heatmap", use_column_width=True)
             
-    except Exception as e:
-        st.error(f"Inference pipeline error: {str(e)}")
+    with col_res:
+        st.markdown("### 📊 Diagnostic Results")
+        top_disease = disease_names.get(tc, "Unknown")
+        st.success(f"**Top Classification:** {top_disease}")
+        
+        st.markdown("#### Class Probability Breakdown:")
+        for idx, prob in enumerate(probs):
+            if prob > 0.05:  # Filter low probabilities for readability
+                disease_label = disease_names.get(idx, f"Class {idx}")
+                st.progress(float(prob), text=f"{disease_label}: {prob * 100:.1f}%")
 else:
-    with col_up2:
-        st.info("👈 Please upload a retinal fundus image using the uploader on the left to initialize diagnostic analysis.")
+    if uploaded is None:
+        st.info("👈 Please upload a retinal fundus image using the uploader above to begin analysis.")
 cb = file_b64("outputs/training_curves.png") if Path("outputs/training_curves.png").exists() else ""
 ab = file_b64("outputs/per_disease_auc.png") if Path("outputs/per_disease_auc.png").exists() else ""
 rj = json.dumps(RD)
@@ -818,4 +819,4 @@ document.getElementById('tab-architecture').classList.add('view-hidden');
 </script>
 </body></html>"""
 
-components.html(HTML, height=870, scrolling=False)
+# components.html(HTML, height=870, scrolling=False)
