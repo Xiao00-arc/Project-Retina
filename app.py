@@ -97,13 +97,13 @@ auc_val = f"{report['overall']['macro_auc']:.3f}" if report else "0.918"
 f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
-uploaded = st.file_uploader("u", type=["jpg","jpeg","png"], key="fu")
+uploaded = st.file_uploader("Choose Fundus Photograph", type=["jpg","jpeg","png"], key="fu")
 
 RD = {}
 if uploaded and model:
     pil  = Image.open(uploaded).convert("RGB")
     np_  = np.array(pil)
-    with st.spinner(""):
+    with st.spinner("Running OcuNet inference & Grad-CAM..."):
         tensor, probs = run_inference(np_, model, config, device)
         o,h,v,tc = apply_gradcam(tensor, model, device, np_)
     RD = {
