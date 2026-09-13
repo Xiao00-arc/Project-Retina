@@ -28,7 +28,7 @@ div[data-testid="stNotification"],[data-baseweb="notification"],
 .block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
 .stApp{background:#0a0d14!important;overflow:hidden!important}
 iframe{border:none!important; position:fixed!important; top:0!important; left:0!important; height:100vh!important; width:100vw!important; z-index:9999!important; display:block!important;}
-[data-testid="stFileUploader"]{position:absolute;opacity:0;pointer-events:none}
+/* [data-testid="stFileUploader"]{position:absolute;opacity:0;pointer-events:none} */
 </style>
 """, unsafe_allow_html=True)
 
