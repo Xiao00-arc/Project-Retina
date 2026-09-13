@@ -134,6 +134,8 @@ if uploaded is not None and model is not None:
 else:
     if uploaded is None:
         st.info("👈 Please upload a retinal fundus image using the uploader above to begin analysis.")
+if 'RD' not in locals():
+    RD = {}
 cb = file_b64("outputs/training_curves.png") if Path("outputs/training_curves.png").exists() else ""
 ab = file_b64("outputs/per_disease_auc.png") if Path("outputs/per_disease_auc.png").exists() else ""
 rj = json.dumps(RD)
