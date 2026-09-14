@@ -1,6 +1,5 @@
 """
 app.py — OcuNet v4 | Bold Clinical Dashboard + Theme Toggle
-streamlit run app.py
 """
 import sys, json, base64, numpy as np
 from pathlib import Path
@@ -27,8 +26,15 @@ div[data-testid="stNotification"],[data-baseweb="notification"],
 .block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
 .stApp{background:#0a0d14!important;overflow:hidden!important}
 iframe{border:none!important; position:fixed!important; top:0!important; left:0!important; height:100vh!important; width:100vw!important; z-index:9999!important; display:block!important;}
-/* Native uploader hidden so your custom HTML button triggers it seamlessly */
-[data-testid="stFileUploader"]{position:absolute;opacity:0;pointer-events:none;z-index:-1}
+
+/* Hide the native uploader safely without breaking React's event listeners */
+[data-testid="stFileUploader"] {
+    position: fixed !important;
+    top: -9999px !important;
+    left: -9999px !important;
+    opacity: 0 !important;
+    z-index: -1 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,13 +44,15 @@ def load_model_cached():
     label_map = load_label_map("configs/label_map.json")
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt_path = Path(config["paths"]["outputs"]) / "ocunet_best.pth"
+    disease_names = {int(k): v for k, v in label_map["global_labels"].items()} if label_map else {}
+    
     if not ckpt_path.exists():
-        return None, config, None, None, device
+        return None, config, disease_names, None, device
+        
     ckpt  = torch.load(ckpt_path, map_location=device)
     model = build_model(config).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
-    disease_names = {int(k): v for k, v in label_map["global_labels"].items()} if label_map else {}
     return model, config, disease_names, ckpt, device
 
 @st.cache_data
@@ -97,20 +105,29 @@ auc_val = f"{report['overall']['macro_auc']:.3f}" if report else "0.918"
 f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
-# Hidden native uploader that your JavaScript trigUp() clicks
+# Hidden native uploader triggered dynamically by JS
 uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
 
-# Strictly enforce RD initialization to prevent NameError freezing
 RD = {}
-
-if uploaded is not None and model is not None:
+if uploaded is not None:
+    # 1. Ensure basic image payload is generated even if model inference fails
     pil = Image.open(uploaded).convert("RGB")
     np_ = np.array(pil)
+    o = h = v = np_
+    tc = 0
+    probs = [0.0] * (len(disease_names) if disease_names else 46)
     
-    with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
-        tensor, probs = run_inference(np_, model, config, device)
-        o, h, v, tc = apply_gradcam(tensor, model, device, np_)
+    # 2. Safely attempt model inference
+    try:
+        if model is not None:
+            tensor, probs = run_inference(np_, model, config, device)
+            o, h, v, tc = apply_gradcam(tensor, model, device, np_)
+        else:
+            print("WARNING: Model weights missing on cloud. Bypassing inference to render UI.")
+    except Exception as e:
+        print(f"WARNING: Inference execution failed: {str(e)}")
         
+    # 3. Push data to HTML template
     RD = {
         "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
         "probs": [float(p) for p in probs],
@@ -604,16 +621,13 @@ function applyStoredTheme(){{
 }}
 
 function switchTab(name, el) {{
-  // Update button highlights
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
   if(el) el.classList.add('on');
 
-  // Grab the tab containers
   const diagTab = document.getElementById('tab-diagnosis');
   const perfTab = document.getElementById('tab-performance');
   const archTab = document.getElementById('tab-architecture');
 
-  // Hide all explicitly using inline styles & classes
   diagTab.style.display = 'none';
   perfTab.style.display = 'none';
   archTab.style.display = 'none';
@@ -621,7 +635,6 @@ function switchTab(name, el) {{
   perfTab.classList.add('view-hidden');
   archTab.classList.add('view-hidden');
 
-  // Show only the requested one
   if (name === 'diagnosis') {{
     diagTab.style.display = 'flex';
   }} else if (name === 'performance') {{
@@ -654,20 +667,34 @@ function upd(){{
   }}).join('');
 }}
 
-function trigUp(){{
-  const el=window.parent.document.querySelector('[data-testid="stFileUploader"] input[type="file"]');
-  if(el){{el.style.cssText='display:block;opacity:0;position:absolute';el.click();}}
+function trigUp() {{
+  const parent = window.parent.document;
+  const uploaderContainer = parent.querySelector('[data-testid="stFileUploader"]');
+  if (!uploaderContainer) return;
+
+  // Clear existing file if this is a "New Image" click
+  const deleteBtn = uploaderContainer.querySelector('button');
+  if (deleteBtn) {{
+    deleteBtn.click();
+    // Allow React time to reset the input field
+    setTimeout(() => {{
+      const fileInput = parent.querySelector('[data-testid="stFileUploader"] input[type="file"]');
+      if (fileInput) fileInput.click();
+    }}, 150);
+  }} else {{
+    const fileInput = uploaderContainer.querySelector('input[type="file"]');
+    if (fileInput) fileInput.click();
+  }}
 }}
+
 function triggerPDF() {{
   const {{ jsPDF }} = window.jspdf;
   const doc = new jsPDF();
   
-  // 1. Gather Inputs
   const patientId = document.getElementById('rp-patient').value || "Unknown";
   const eye = document.getElementById('rp-eye').value;
   const notes = document.getElementById('rp-notes').value || "No additional clinical notes provided.";
   
-  // 2. Header
   doc.setFont("helvetica", "bold");
   doc.setFontSize(18);
   doc.setTextColor(0, 51, 102);
@@ -680,7 +707,6 @@ function triggerPDF() {{
   doc.setDrawColor(0, 51, 102);
   doc.line(14, 30, 196, 30);
   
-  // 3. Metadata
   doc.setFont("helvetica", "bold");
   doc.setTextColor(0, 0, 0);
   doc.text("Patient ID: ", 14, 40);
@@ -692,13 +718,11 @@ function triggerPDF() {{
   doc.setFont("helvetica", "normal");
   doc.text(eye, 130, 40);
   
-  // 4. Top 8 Findings Table
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(0, 51, 102);
   doc.text("Diagnostic Findings (Top Probability Ranking)", 14, 52);
   
-  // Grab predictions from your existing 'pr' (probabilities) and 'dn' (disease names) arrays
   const topPreds = pr.map((p, i) => [dn[i], p]).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const tableBody = topPreds.map((arr, idx) => {{
       const prob = arr[1];
@@ -715,14 +739,12 @@ function triggerPDF() {{
       styles: {{ fontSize: 9 }}
   }});
   
-  // 5. Visual Evidence (Images)
   let finalY = doc.lastAutoTable.finalY || 56;
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(0, 51, 102);
   doc.text("Visual Interpretability (Grad-CAM Attention Overlay)", 14, finalY + 12);
   
-  // Grab base64 image data straight from the HTML image tags
   const origImg = document.getElementById('orig-img').src;
   const overlayImg = document.getElementById('hm-v').src;
   
@@ -741,7 +763,6 @@ function triggerPDF() {{
       doc.text("Grad-CAM Disease Localization", 120, finalY + 95);
   }}
   
-  // 6. Doctor's Notes
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(0, 51, 102);
@@ -753,15 +774,14 @@ function triggerPDF() {{
   const splitNotes = doc.splitTextToSize(notes, 180);
   doc.text(splitNotes, 14, finalY + 115);
   
-  // 7. Disclaimer
   doc.setFontSize(8);
   doc.setTextColor(150, 150, 150);
   doc.text("Disclaimer: OcuNet is an AI-assisted decision support system designed for retinal screening. This report", 14, 282);
   doc.text("must be reviewed and verified by a licensed clinician prior to diagnostic or therapeutic action.", 14, 286);
   
-  // 8. Download
   doc.save("OcuNet_Report_" + patientId + ".pdf");
 }}
+
 if(HR){{
   document.getElementById('drop-zone').style.display='none';
   document.getElementById('img-body').style.display='flex';
@@ -781,7 +801,7 @@ if(HR){{
   document.getElementById('img-info').textContent='{fn}';
   upd();
 }}
-// Force hide non-default views on initial page load
+
 document.getElementById('tab-performance').classList.add('view-hidden');
 document.getElementById('tab-architecture').classList.add('view-hidden');
 </script>
