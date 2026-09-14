@@ -10,7 +10,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
-
 sys.path.insert(0, str(Path(__file__).parent))
 from src.model.ocunet import build_model
 from src.dataset.loader import load_config, load_label_map, get_transforms
@@ -27,8 +26,9 @@ div[data-testid="stNotification"],[data-baseweb="notification"],
 [data-testid="stMainBlockContainer"],[data-testid="stAppViewContainer"],
 .block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
 .stApp{background:#0a0d14!important;overflow:hidden!important}
-iframe{border:none!important; position:fixed!important; top:0!important; left:0!important; height:100vh!important; width:100vw!important; z-index:9999!important; display:block!important;}
-/* [data-testid="stFileUploader"]{position:absolute;opacity:0;pointer-events:none} */
+iframe{border:none!important; position:fixed!important; top:50px!important; left:0!important; height:calc(100vh - 50px)!important; width:100vw!important; z-index:999!important; display:block!important;}
+/* Keep the native uploader visible at the top so it doesn't get blocked by cross-origin iframe rules */
+[data-testid="stFileUploader"] { position: relative; z-index: 10000; background: #0a0d14; padding: 10px; border-bottom: 1px solid #252b40; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,7 +39,7 @@ def load_model_cached():
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt_path = Path(config["paths"]["outputs"]) / "ocunet_best.pth"
     if not ckpt_path.exists():
-        return None, None, None, None, device
+        return None, config, None, None, device
     ckpt  = torch.load(ckpt_path, map_location=device)
     model = build_model(config).to(device)
     model.load_state_dict(ckpt["model_state"])
@@ -97,10 +97,10 @@ auc_val = f"{report['overall']['macro_auc']:.3f}" if report else "0.918"
 f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
-# Native file uploader outside the hidden iframe wall
-# --- NATIVE STREAMLIT FILE UPLOADER & INFERENCE ENGINE ---
+# Native file uploader stays outside the iframe to prevent browser blocks
 uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
 
+RD = {}
 if uploaded is not None and model is not None:
     pil = Image.open(uploaded).convert("RGB")
     np_ = np.array(pil)
@@ -109,33 +109,16 @@ if uploaded is not None and model is not None:
         tensor, probs = run_inference(np_, model, config, device)
         o, h, v, tc = apply_gradcam(tensor, model, device, np_)
         
-    # Create a clean two-column layout for native display
-    col_img, col_res = st.columns(2, gap="large")
-    
-    with col_img:
-        st.markdown("### 📷 Input Fundus Image")
-        st.image(pil, caption=uploaded.name, use_column_width=True)
-        
-        # If Grad-CAM heatmap array 'h' is generated, display it
-        if h is not None:
-            st.markdown("### 🔥 Grad-CAM Attention Map")
-            st.image(h, caption="Disease Localization Heatmap", use_column_width=True)
-            
-    with col_res:
-        st.markdown("### 📊 Diagnostic Results")
-        top_disease = disease_names.get(tc, "Unknown")
-        st.success(f"**Top Classification:** {top_disease}")
-        
-        st.markdown("#### Class Probability Breakdown:")
-        for idx, prob in enumerate(probs):
-            if prob > 0.05:  # Filter low probabilities for readability
-                disease_label = disease_names.get(idx, f"Class {idx}")
-                st.progress(float(prob), text=f"{disease_label}: {prob * 100:.1f}%")
-else:
-    if uploaded is None:
-        st.info("👈 Please upload a retinal fundus image using the uploader above to begin analysis.")
-if 'RD' not in locals():
-    RD = {}
+    # Populate data payload to inject into your custom HTML
+    RD = {
+        "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
+        "probs": [float(p) for p in probs],
+        "dn": [disease_names[i] for i in range(len(probs))],
+        "td": disease_names.get(tc, "Unknown"),
+        "fn": uploaded.name, "fs": f"{uploaded.size // 1024}KB",
+        "dim": f"{pil.size[0]}x{pil.size[1]}"
+    }
+
 cb = file_b64("outputs/training_curves.png") if Path("outputs/training_curves.png").exists() else ""
 ab = file_b64("outputs/per_disease_auc.png") if Path("outputs/per_disease_auc.png").exists() else ""
 rj = json.dumps(RD)
@@ -148,6 +131,7 @@ fn = RD.get("fn","—")
 fs = RD.get("fs","—")
 dm = RD.get("dim","—")
 
+# YOUR EXACT ORIGINAL HTML
 HTML = f"""<!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
@@ -215,7 +199,7 @@ html,body{{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--b
 .phtitle{{font-size:.72rem;font-weight:600;color:var(--tx2);text-transform:uppercase;letter-spacing:.12em;font-family:'IBM Plex Mono',monospace}}
 .ph-r{{font-size:.7rem;color:var(--tx3);font-family:'IBM Plex Mono',monospace}}
 
-/* ── IMAGE SECTION (top half of left) ── */
+/* ── IMAGE SECTION ── */
 .img-section{{
   flex:1;min-height:0;
   display:flex;flex-direction:column;
@@ -241,7 +225,7 @@ html,body{{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--b
 .new-btn{{margin-left:auto;font-size:.73rem;color:var(--ac);font-weight:600;border:1px solid rgba(var(--acr),.3);padding:2px 10px;border-radius:4px;background:rgba(var(--acr),.07);cursor:pointer;white-space:nowrap}}
 .new-btn:hover{{background:rgba(var(--acr),.14)}}
 
-/* ── HEATMAP SECTION (bottom half of left) ── */
+/* ── HEATMAP SECTION ── */
 .hm-section{{
   height:42%;flex-shrink:0;
   display:flex;flex-direction:column;
@@ -336,22 +320,6 @@ input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:12px;heig
 input:checked+.ts{{background:rgba(var(--acr),.2);border-color:var(--ac)}}
 input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
 
-/* ── RIGHT: STATS (bottom) ── */
-.stats-section{{
-  flex-shrink:0;
-  display:grid;grid-template-columns:repeat(3,1fr);
-  gap:0;background:var(--bd);
-  width:100%;
-}}
-.stat-cell{{
-  background:var(--bg1);padding:.8rem 1.2rem;
-  position:relative;overflow:hidden;
-  border-right:1px solid var(--bd);
-}}
-.stat-cell:last-child{{border-right:none}}
-.stat-v{{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;font-weight:700;color:var(--tx);line-height:1}}
-.stat-l{{font-size:.72rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-top:4px;font-weight:500}}
-
 /* ── NAV TABS ── */
 .tabs{{display:flex;gap:0;border-bottom:1px solid var(--bd);background:var(--bg1);flex-shrink:0}}
 .tab{{padding:.6rem 1.2rem;font-size:.82rem;font-weight:600;color:var(--tx3);cursor:pointer;border-bottom:2px solid transparent;transition:.15s;letter-spacing:.04em;text-transform:uppercase;font-family:'IBM Plex Mono',monospace}}
@@ -359,12 +327,7 @@ input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
 .tab.on{{color:var(--ac);border-bottom-color:var(--ac)}}
 
 /* ── PERF / ARCH VIEWS ── */
-.view {{
-    flex: 1;
-    overflow-y: auto;
-    padding: 1.5rem;
-    height: 100%;
-}}
+.view {{ flex: 1; overflow-y: auto; padding: 1.5rem; height: 100%; }}
 .sec-tag{{font-size:.72rem;font-weight:600;color:var(--ac);text-transform:uppercase;letter-spacing:.14em;margin-bottom:.3rem;font-family:'IBM Plex Mono',monospace}}
 .sec-title{{font-size:1.2rem;font-weight:700;color:var(--tx);letter-spacing:-.02em;margin-bottom:.8rem}}
 .metrics-g{{display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;margin-bottom:1rem}}
@@ -377,51 +340,15 @@ input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
 .arch-t::after{{content:'';flex:1;height:1px;background:var(--bd)}}
 .arch-i{{font-size:.84rem;color:var(--tx2);padding:4px 0;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:7px}}
 .arch-i::before{{content:'';width:3px;height:3px;background:var(--ac);border-radius:50%;flex-shrink:0}}
+
 /* ── REPORT UI ── */
-.report-section {{
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--bd);
-}}
-.rp-grid {{
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
-  margin-bottom: 0.8rem;
-}}
-.rp-input {{
-  width: 100%;
-  background: var(--bg1);
-  border: 1px solid var(--bd);
-  color: var(--tx);
-  padding: 8px 10px;
-  border-radius: 6px;
-  font-family: 'IBM Plex Sans', sans-serif;
-  font-size: 0.85rem;
-  outline: none;
-}}
+.report-section {{ margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--bd); }}
+.rp-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 0.8rem; }}
+.rp-input {{ width: 100%; background: var(--bg1); border: 1px solid var(--bd); color: var(--tx); padding: 8px 10px; border-radius: 6px; font-family: 'IBM Plex Sans', sans-serif; font-size: 0.85rem; outline: none; }}
 .rp-input:focus {{ border-color: var(--ac); }}
 textarea.rp-input {{ resize: vertical; min-height: 60px; }}
-.btn-dl {{
-  width: 100%;
-  background: var(--ac);
-  color: #ffffff;
-  border: none;
-  padding: 11px;
-  border-radius: 6px;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  transition: 0.2s;
-  box-shadow: 0 2px 6px rgba(var(--acr), 0.25);
-}}
-.btn-dl:hover {{
-  filter: brightness(1.1);
-  box-shadow: 0 4px 12px rgba(var(--acr), 0.35);
-}}
+.btn-dl {{ width: 100%; background: var(--ac); color: #ffffff; border: none; padding: 11px; border-radius: 6px; font-weight: 600; cursor: pointer; font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; transition: 0.2s; box-shadow: 0 2px 6px rgba(var(--acr), 0.25); }}
+.btn-dl:hover {{ filter: brightness(1.1); box-shadow: 0 4px 12px rgba(var(--acr), 0.35); }}
 </style>
 </head>
 <body>
@@ -456,12 +383,11 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
       </div>
 
       <!-- Upload state -->
-      <div class="drop" id="drop-zone" onclick="trigUp()">
+      <div class="drop" id="drop-zone" onclick="alert('Please use the native upload button at the very top of the page.')">
         <div class="drop-ic">🔬</div>
         <div class="drop-t">Upload Fundus Photograph</div>
-        <div class="drop-s">JPG or PNG · Min 224×224px · Max 200MB</div>
-        <div class="drop-btn">Choose File →</div>
-        <div style="margin-top:.6rem;font-size:.65rem;color:var(--tx3)">Test: data/raw/ODIR-5K/</div>
+        <div class="drop-s">Use the Browse files button above to load an image.</div>
+        <div class="drop-btn">Use Uploader Above ↑</div>
       </div>
 
       <!-- Result state -->
@@ -472,7 +398,7 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
         <span class="mc" id="fn-c">—</span>
         <span class="mc" id="dim-c">—</span>
         <span class="mc" id="fs-c">—</span>
-        <span class="new-btn" onclick="trigUp()">↑ New Image</span>
+        <span class="new-btn" onclick="alert('Use the native upload button at the top to change image.')">↑ New Image</span>
       </div>
     </div>
 
@@ -549,7 +475,7 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
             <div id="cbars"></div>
           </div>
           
-         <!-- NEW: REPORT GENERATION UI -->
+         <!-- REPORT GENERATION UI -->
           <div class="report-section">
             <div class="rank-title">📄 Clinical Report Generation</div>
             <div class="rp-grid">
@@ -566,11 +492,10 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
               📋 DOWNLOAD REPORT
             </button>
           </div>
-          <!-- END NEW UI -->
 
         </div>
       </div>
-    </div> <!-- <--- ADD THIS CLOSING TAG RIGHT HERE TO CLOSE tab-diagnosis -->
+    </div> 
 
     <!-- ── PERFORMANCE TAB ── -->
     <div id="tab-performance" class="view view-hidden" style="display:none;">
@@ -637,16 +562,13 @@ function applyStoredTheme(){{
 }}
 
 function switchTab(name, el) {{
-  // Update button highlights
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
   if(el) el.classList.add('on');
 
-  // Grab the tab containers
   const diagTab = document.getElementById('tab-diagnosis');
   const perfTab = document.getElementById('tab-performance');
   const archTab = document.getElementById('tab-architecture');
 
-  // Hide all explicitly using inline styles & classes
   diagTab.style.display = 'none';
   perfTab.style.display = 'none';
   archTab.style.display = 'none';
@@ -654,7 +576,6 @@ function switchTab(name, el) {{
   perfTab.classList.add('view-hidden');
   archTab.classList.add('view-hidden');
 
-  // Show only the requested one
   if (name === 'diagnosis') {{
     diagTab.style.display = 'flex';
   }} else if (name === 'performance') {{
@@ -687,20 +608,14 @@ function upd(){{
   }}).join('');
 }}
 
-function trigUp(){{
-  const el=window.parent.document.querySelector('[data-testid="stFileUploader"] input[type="file"]');
-  if(el){{el.style.cssText='display:block;opacity:0;position:absolute';el.click();}}
-}}
 function triggerPDF() {{
   const {{ jsPDF }} = window.jspdf;
   const doc = new jsPDF();
   
-  // 1. Gather Inputs
   const patientId = document.getElementById('rp-patient').value || "Unknown";
   const eye = document.getElementById('rp-eye').value;
   const notes = document.getElementById('rp-notes').value || "No additional clinical notes provided.";
   
-  // 2. Header
   doc.setFont("helvetica", "bold");
   doc.setFontSize(18);
   doc.setTextColor(0, 51, 102);
@@ -713,7 +628,6 @@ function triggerPDF() {{
   doc.setDrawColor(0, 51, 102);
   doc.line(14, 30, 196, 30);
   
-  // 3. Metadata
   doc.setFont("helvetica", "bold");
   doc.setTextColor(0, 0, 0);
   doc.text("Patient ID: ", 14, 40);
@@ -725,13 +639,11 @@ function triggerPDF() {{
   doc.setFont("helvetica", "normal");
   doc.text(eye, 130, 40);
   
-  // 4. Top 8 Findings Table
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(0, 51, 102);
   doc.text("Diagnostic Findings (Top Probability Ranking)", 14, 52);
   
-  // Grab predictions from your existing 'pr' (probabilities) and 'dn' (disease names) arrays
   const topPreds = pr.map((p, i) => [dn[i], p]).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const tableBody = topPreds.map((arr, idx) => {{
       const prob = arr[1];
@@ -748,14 +660,12 @@ function triggerPDF() {{
       styles: {{ fontSize: 9 }}
   }});
   
-  // 5. Visual Evidence (Images)
   let finalY = doc.lastAutoTable.finalY || 56;
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(0, 51, 102);
   doc.text("Visual Interpretability (Grad-CAM Attention Overlay)", 14, finalY + 12);
   
-  // Grab base64 image data straight from the HTML image tags
   const origImg = document.getElementById('orig-img').src;
   const overlayImg = document.getElementById('hm-v').src;
   
@@ -774,7 +684,6 @@ function triggerPDF() {{
       doc.text("Grad-CAM Disease Localization", 120, finalY + 95);
   }}
   
-  // 6. Doctor's Notes
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.setTextColor(0, 51, 102);
@@ -786,15 +695,14 @@ function triggerPDF() {{
   const splitNotes = doc.splitTextToSize(notes, 180);
   doc.text(splitNotes, 14, finalY + 115);
   
-  // 7. Disclaimer
   doc.setFontSize(8);
   doc.setTextColor(150, 150, 150);
   doc.text("Disclaimer: OcuNet is an AI-assisted decision support system designed for retinal screening. This report", 14, 282);
   doc.text("must be reviewed and verified by a licensed clinician prior to diagnostic or therapeutic action.", 14, 286);
   
-  // 8. Download
   doc.save("OcuNet_Report_" + patientId + ".pdf");
 }}
+
 if(HR){{
   document.getElementById('drop-zone').style.display='none';
   document.getElementById('img-body').style.display='flex';
@@ -814,10 +722,9 @@ if(HR){{
   document.getElementById('img-info').textContent='{fn}';
   upd();
 }}
-// Force hide non-default views on initial page load
+
 document.getElementById('tab-performance').classList.add('view-hidden');
 document.getElementById('tab-architecture').classList.add('view-hidden');
-</script>
 </script>
 </body></html>"""
 
