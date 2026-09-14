@@ -109,21 +109,19 @@ auc_val = f"{report['overall']['macro_auc']:.3f}" if report else "0.918"
 f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
-# --- NATIVE FILE UPLOADER (Clean & Visible) ---
-# This renders a native Streamlit file picker that won't trigger ClientDisconnect errors
-uploaded = st.file_uploader("📂 Upload Retinal Fundus Photograph (JPG, PNG)", type=["jpg", "jpeg", "png"], key="fu")
+# --- NATIVE STABLE FILE UPLOADER ---
+# Placed directly in the Python runtime to prevent cross-iframe stream drops
+uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
 
 RD = {}
 if uploaded is not None:
     pil = Image.open(uploaded).convert("RGB")
     np_ = np.array(pil)
     
-    # Safe fallbacks
     o = h = v = np_
     tc = 0
     probs = [0.0] * (len(disease_names) if disease_names else 46)
 
-    # Run inference if model is loaded
     if model is not None:
         with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
             tensor, probs = run_inference(np_, model, config, device)
@@ -131,7 +129,6 @@ if uploaded is not None:
     else:
         st.error("⚠️ Model weights (`ocunet_best.pth`) not found.")
 
-    # Build data payload for your HTML template
     RD = {
         "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
         "probs": [float(p) for p in probs],
