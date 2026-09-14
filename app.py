@@ -126,6 +126,13 @@ if uploaded is not None:
         with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
             tensor, probs = run_inference(np_, model, config, device)
             o, h, v, tc = apply_gradcam(tensor, model, device, np_)
+
+            # 🔍 TEMPORARY DEBUG: Print raw vector stats to your app screen
+            st.write("DEBUG - Raw Model Probabilities Summary:", {
+                "Max Probability": float(np.max(probs)) if len(probs) > 0 else "Empty",
+                "Min Probability": float(np.min(probs)) if len(probs) > 0 else "Empty",
+                "Total Classes": len(probs)
+        })
     else:
         st.error("⚠️ Model weights (`ocunet_best.pth`) not found.")
 
