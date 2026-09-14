@@ -40,21 +40,32 @@ iframe{border:none!important; position:fixed!important; top:0!important; left:0!
 """, unsafe_allow_html=True)
 
 @st.cache_resource
+@st.cache_resource
 def load_model_cached():
     config    = load_config("configs/config.yaml")
     label_map = load_label_map("configs/label_map.json")
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt_path = Path(config["paths"]["outputs"]) / "ocunet_best.pth"
-    disease_names = {int(k): v for k, v in label_map["global_labels"].items()} if label_map else {}
     
+    # ADD THESE TWO DEBUG LINES:
+    if ckpt_path.exists():
+        print(f"DEBUG: Found checkpoint file. Size on disk: {ckpt_path.stat().st_size} bytes")
+    else:
+        print("DEBUG: Checkpoint path does not exist!")
+
+    disease_names = {int(k): v for k, v in label_map["global_labels"].items()} if label_map else {}
     if not ckpt_path.exists():
         return None, config, disease_names, None, device
-        
-    ckpt  = torch.load(ckpt_path, map_location=device)
-    model = build_model(config).to(device)
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-    return model, config, disease_names, ckpt, device
+    
+    try:
+        ckpt  = torch.load(ckpt_path, map_location=device)
+        model = build_model(config).to(device)
+        model.load_state_dict(ckpt["model_state"])
+        model.eval()
+        return model, config, disease_names, ckpt, device
+    except Exception as e:
+        print(f"DEBUG: Error loading model state dict: {e}")
+        return None, config, disease_names, None, device
 
 @st.cache_data
 def load_eval_report():
