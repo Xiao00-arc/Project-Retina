@@ -1,6 +1,5 @@
 """
 app.py — OcuNet v4 | Bold Clinical Dashboard + Theme Toggle
-streamlit run app.py
 """
 import sys, json, base64, numpy as np
 from pathlib import Path
@@ -15,20 +14,27 @@ from src.model.ocunet import build_model
 from src.dataset.loader import load_config, load_label_map, get_transforms
 from src.gradcam import GradCAM
 
-st.set_page_config(page_title="OcuNet", page_icon="🔬",
-                   layout="wide", initial_sidebar_state="collapsed")
+# Initialize with sidebar expanded to show the uploader
+st.set_page_config(page_title="OcuNet", page_icon="🔬", layout="wide", initial_sidebar_state="expanded")
+
 st.markdown("""
 <style>
-#MainMenu,footer,header,.stDeployButton,[data-testid="stToolbar"],
-[data-testid="stHeader"],section[data-testid="stSidebar"],
-div[data-testid="stNotification"],[data-baseweb="notification"],
-.stAlert{display:none!important}
-[data-testid="stMainBlockContainer"],[data-testid="stAppViewContainer"],
-.block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
-.stApp{background:#0a0d14!important;overflow:hidden!important}
-iframe{border:none!important; position:fixed!important; top:50px!important; left:0!important; height:calc(100vh - 50px)!important; width:100vw!important; z-index:999!important; display:block!important;}
-/* Keep the native uploader visible at the top so it doesn't get blocked by cross-origin iframe rules */
-[data-testid="stFileUploader"] { position: relative; z-index: 10000; background: #0a0d14; padding: 10px; border-bottom: 1px solid #252b40; }
+#MainMenu, footer, header, .stDeployButton, [data-testid="stToolbar"],
+[data-testid="stHeader"], div[data-testid="stNotification"], [data-baseweb="notification"],
+.stAlert {display: none !important;}
+
+[data-testid="stMainBlockContainer"], [data-testid="stAppViewContainer"],
+.block-container {padding: 0 !important; max-width: 100% !important; overflow: hidden !important;}
+
+.stApp {background: #0a0d14 !important; overflow: hidden !important;}
+
+/* Lock the iframe to the main container without bleeding over the sidebar */
+iframe {
+    border: none !important; 
+    width: 100% !important; 
+    height: 100vh !important; 
+    display: block !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -38,13 +44,13 @@ def load_model_cached():
     label_map = load_label_map("configs/label_map.json")
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt_path = Path(config["paths"]["outputs"]) / "ocunet_best.pth"
+    disease_names = {int(k): v for k, v in label_map["global_labels"].items()} if label_map else {}
     if not ckpt_path.exists():
-        return None, config, None, None, device
+        return None, config, disease_names, None, device
     ckpt  = torch.load(ckpt_path, map_location=device)
     model = build_model(config).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
-    disease_names = {int(k): v for k, v in label_map["global_labels"].items()}
     return model, config, disease_names, ckpt, device
 
 @st.cache_data
@@ -97,23 +103,28 @@ auc_val = f"{report['overall']['macro_auc']:.3f}" if report else "0.918"
 f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
-# Native file uploader stays outside the iframe to prevent browser blocks
-uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
+# --- SIDEBAR UPLOADER ---
+with st.sidebar:
+    st.markdown("### 🔬 OcuNet Input")
+    st.markdown("Upload a fundus image here to securely initialize the EfficientNet pipeline.")
+    uploaded = st.file_uploader("Upload Retinal Scan", type=["jpg", "jpeg", "png"], key="fu")
 
+# Unconditionally initialize RD so the NameError crash never happens again
 RD = {}
+
 if uploaded is not None and model is not None:
     pil = Image.open(uploaded).convert("RGB")
     np_ = np.array(pil)
     
-    with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
-        tensor, probs = run_inference(np_, model, config, device)
-        o, h, v, tc = apply_gradcam(tensor, model, device, np_)
+    with st.sidebar:
+        with st.spinner("Executing inference & Grad-CAM..."):
+            tensor, probs = run_inference(np_, model, config, device)
+            o, h, v, tc = apply_gradcam(tensor, model, device, np_)
         
-    # Populate data payload to inject into your custom HTML
     RD = {
         "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
         "probs": [float(p) for p in probs],
-        "dn": [disease_names[i] for i in range(len(probs))],
+        "dn": [disease_names.get(i, f"Class {i}") for i in range(len(probs))],
         "td": disease_names.get(tc, "Unknown"),
         "fn": uploaded.name, "fs": f"{uploaded.size // 1024}KB",
         "dim": f"{pil.size[0]}x{pil.size[1]}"
@@ -131,7 +142,6 @@ fn = RD.get("fn","—")
 fs = RD.get("fs","—")
 dm = RD.get("dim","—")
 
-# YOUR EXACT ORIGINAL HTML
 HTML = f"""<!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
@@ -222,8 +232,6 @@ html,body{{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--b
   background:var(--bg2);
 }}
 .mc{{font-family:'IBM Plex Mono',monospace;font-size:.72rem;color:var(--tx3);background:var(--bg3);border:1px solid var(--bd);padding:1px 6px;border-radius:3px}}
-.new-btn{{margin-left:auto;font-size:.73rem;color:var(--ac);font-weight:600;border:1px solid rgba(var(--acr),.3);padding:2px 10px;border-radius:4px;background:rgba(var(--acr),.07);cursor:pointer;white-space:nowrap}}
-.new-btn:hover{{background:rgba(var(--acr),.14)}}
 
 /* ── HEATMAP SECTION ── */
 .hm-section{{
@@ -270,7 +278,6 @@ html,body{{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--b
   background:rgba(var(--acr),.02);text-align:center;
   padding:1.5rem;
 }}
-.drop:hover{{border-color:var(--ac);background:rgba(var(--acr),.05)}}
 .drop-ic{{font-size:2rem;margin-bottom:.6rem}}
 .drop-t{{font-size:.88rem;font-weight:600;color:var(--tx);margin-bottom:.3rem}}
 .drop-s{{font-size:.84rem;color:var(--tx3)}}
@@ -375,22 +382,20 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
   <!-- ══ LEFT PANEL ══ -->
   <div class="left-panel">
 
-    <!-- Image section -->
     <div class="img-section" id="img-section">
       <div class="ph">
         <div class="ph-l"><div class="phdot"></div><span class="phtitle">Fundus Image</span></div>
         <span class="ph-r" id="img-info">No image loaded</span>
       </div>
 
-      <!-- Upload state -->
-      <div class="drop" id="drop-zone" onclick="alert('Please use the native upload button at the very top of the page.')">
+      <!-- Upload state now points to the sidebar -->
+      <div class="drop" id="drop-zone" onclick="alert('Please use the file uploader in the left sidebar to bypass Streamlit Cloud cross-origin security walls.')">
         <div class="drop-ic">🔬</div>
-        <div class="drop-t">Upload Fundus Photograph</div>
-        <div class="drop-s">Use the Browse files button above to load an image.</div>
-        <div class="drop-btn">Use Uploader Above ↑</div>
+        <div class="drop-t">Awaiting Retinal Scan</div>
+        <div class="drop-s">Please use the file uploader in the left sidebar.</div>
+        <div class="drop-btn">Use Sidebar ←</div>
       </div>
 
-      <!-- Result state -->
       <div class="img-body" id="img-body" style="display:none">
         <img id="orig-img" src="" alt="fundus"/>
       </div>
@@ -398,7 +403,6 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
         <span class="mc" id="fn-c">—</span>
         <span class="mc" id="dim-c">—</span>
         <span class="mc" id="fs-c">—</span>
-        <span class="new-btn" onclick="alert('Use the native upload button at the top to change image.')">↑ New Image</span>
       </div>
     </div>
 
@@ -432,7 +436,6 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
   <!-- ══ RIGHT PANEL ══ -->
   <div class="right-panel">
 
-    <!-- Tabs -->
     <div class="tabs">
       <div class="tab on" onclick="switchTab('diagnosis',this)">Diagnosis</div>
       <div class="tab" onclick="switchTab('performance',this)">Performance</div>
@@ -441,8 +444,6 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
 
     <!-- ── DIAGNOSIS TAB ── -->
     <div id="tab-diagnosis" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden">
-
-      <!-- Controls -->
       <div class="ctrl-section">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:.5rem">
           <div class="ctrl-r">
@@ -460,14 +461,13 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
         </div>
       </div>
 
-      <!-- Diagnosis output -->
       <div class="diag-section">
         <div class="empty-state" id="diag-empty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:65vh; text-align:center; padding:2rem;">
-  <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.8;">👁️‍🗨️</div>
-  <div style="font-size: 1.1rem; font-weight: 600; color: var(--tx); margin-bottom: 0.4rem; letter-spacing:-0.01em;">Awaiting Retinal Fundus Image</div>
-  <div style="font-size: 0.85rem; color: var(--tx3); max-width: 320px; line-height: 1.4; margin-bottom: 1.5rem;">Upload an image on the left to initialize OcuNet multi-label classification and Grad-CAM attention localization.</div>
-  <div style="font-family:'IBM Plex Mono',monospace; font-size:0.7rem; color:var(--ac); background:rgba(var(--acr),0.08); border:1px solid rgba(var(--acr),0.2); padding:4px 12px; border-radius:4px; letter-spacing:0.06em;">SYSTEM READY · 46 CLASSES</div>
-</div>  
+          <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.8;">👁️‍🗨️</div>
+          <div style="font-size: 1.1rem; font-weight: 600; color: var(--tx); margin-bottom: 0.4rem; letter-spacing:-0.01em;">Awaiting Retinal Fundus Image</div>
+          <div style="font-size: 0.85rem; color: var(--tx3); max-width: 320px; line-height: 1.4; margin-bottom: 1.5rem;">Use the sidebar on the left to initialize OcuNet multi-label classification.</div>
+          <div style="font-family:'IBM Plex Mono',monospace; font-size:0.7rem; color:var(--ac); background:rgba(var(--acr),0.08); border:1px solid rgba(var(--acr),0.2); padding:4px 12px; border-radius:4px; letter-spacing:0.06em;">SYSTEM READY · 46 CLASSES</div>
+        </div>  
         <div id="diag-result" style="display:none">
           <div id="chips"></div>
           <div id="cb-wrap">
@@ -475,7 +475,6 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
             <div id="cbars"></div>
           </div>
           
-         <!-- REPORT GENERATION UI -->
           <div class="report-section">
             <div class="rank-title">📄 Clinical Report Generation</div>
             <div class="rp-grid">
@@ -488,11 +487,8 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
               </select>
             </div>
             <textarea id="rp-notes" class="rp-input" placeholder="Doctor's Clinical Notes (Optional)"></textarea>
-            <button class="btn-dl" onclick="triggerPDF()" style="margin-top:0.8rem;">
-              📋 DOWNLOAD REPORT
-            </button>
+            <button class="btn-dl" onclick="triggerPDF()" style="margin-top:0.8rem;">📋 DOWNLOAD REPORT</button>
           </div>
-
         </div>
       </div>
     </div> 
@@ -508,7 +504,6 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
         <div class="mtile"><div class="mtile-v">25</div><div class="mtile-l">Diseases</div></div>
       </div>
       
-      <!-- Charts Block -->
       <div style="margin-bottom:.8rem">
         <div style="font-size:.6rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;font-family:IBM Plex Mono,monospace">Loss &amp; AUC Curves · 29 Epochs</div>
         {"<img class='chart-img' src='data:image/png;base64," + cb + "' alt='curves'/>" if cb else ""}
