@@ -25,7 +25,6 @@ div[data-testid="stNotification"],[data-baseweb="notification"],{display:none!im
 .block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
 .stApp{background:#0a0d14!important;overflow:hidden!important}
 iframe{border:none!important; position:fixed!important; top:0!important; left:0!important; height:100vh!important; width:100vw!important; z-index:9999!important; display:block!important;}
-[data-testid="stFileUploader"]{position:absolute;opacity:0.01;width:1px;height:1px;overflow:hidden;z-index:-1}
 
 </style>
 """, unsafe_allow_html=True)
@@ -109,8 +108,9 @@ f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
 # --- NATIVE STABLE FILE UPLOADER ---
-# Placed directly in the Python runtime to prevent cross-iframe stream drops
-uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
+# --- VISIBLE NATIVE UPLOADER ---
+# Click this directly with your mouse to avoid ClientDisconnect crashes
+uploaded = st.file_uploader("📂 Click here to upload a retinal fundus image", type=["jpg", "jpeg", "png"], key="fu")
 
 RD = {}
 if uploaded is not None:
@@ -125,15 +125,6 @@ if uploaded is not None:
         with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
             tensor, probs = run_inference(np_, model, config, device)
             o, h, v, tc = apply_gradcam(tensor, model, device, np_)
-
-            # 🔍 TEMPORARY DEBUG: Print raw vector stats to your app screen
-            st.write("DEBUG - Raw Model Probabilities Summary:", {
-                "Max Probability": float(np.max(probs)) if len(probs) > 0 else "Empty",
-                "Min Probability": float(np.min(probs)) if len(probs) > 0 else "Empty",
-                "Total Classes": len(probs)
-        })
-    else:
-        st.error("⚠️ Model weights (`ocunet_best.pth`) not found.")
 
     RD = {
         "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
@@ -448,7 +439,7 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
       </div>
 
       <!-- Upload state -->
-      <div class="drop" id="drop-zone" onclick="trigUp()">
+      <div class="drop" id="drop-zone">
         <div class="drop-ic">🔬</div>
         <div class="drop-t">Upload Fundus Photograph</div>
         <div class="drop-s">JPG or PNG · Min 224×224px · Max 200MB</div>
@@ -464,7 +455,7 @@ textarea.rp-input {{ resize: vertical; min-height: 60px; }}
         <span class="mc" id="fn-c">—</span>
         <span class="mc" id="dim-c">—</span>
         <span class="mc" id="fs-c">—</span>
-        <span class="new-btn" onclick="trigUp()">↑ New Image</span>
+        <span class="new-btn">↑ New Image</span>
       </div>
     </div>
 
@@ -674,25 +665,6 @@ function upd(){{
   }}).join('');
 }}
 
-function trigUp() {{
-  const parent = window.parent.document;
-  const uploaderContainer = parent.querySelector('[data-testid="stFileUploader"]');
-  if (!uploaderContainer) return;
-
-  // Clear existing file if this is a "New Image" click
-  const deleteBtn = uploaderContainer.querySelector('button');
-  if (deleteBtn) {{
-    deleteBtn.click();
-    // Allow React time to reset the input field
-    setTimeout(() => {{
-      const fileInput = parent.querySelector('[data-testid="stFileUploader"] input[type="file"]');
-      if (fileInput) fileInput.click();
-    }}, 150);
-  }} else {{
-    const fileInput = uploaderContainer.querySelector('input[type="file"]');
-    if (fileInput) fileInput.click();
-  }}
-}}
 
 function triggerPDF() {{
   const {{ jsPDF }} = window.jspdf;
