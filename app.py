@@ -26,6 +26,7 @@ div[data-testid="stNotification"],[data-baseweb="notification"],
 .block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
 .stApp{background:#0a0d14!important;overflow:hidden!important}
 iframe{border:none!important; position:fixed!important; top:0!important; left:0!important; height:100vh!important; width:100vw!important; z-index:9999!important; display:block!important;}
+[data-testid="stFileUploader"]{position:absolute;opacity:0.01;width:1px;height:1px;overflow:hidden;z-index:-1}
 
 /* Hide the native uploader safely without breaking React's event listeners */
 [data-testid="stFileUploader"] {
@@ -110,24 +111,23 @@ uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jp
 
 RD = {}
 if uploaded is not None:
-    # 1. Ensure basic image payload is generated even if model inference fails
     pil = Image.open(uploaded).convert("RGB")
     np_ = np.array(pil)
+    
+    # 1. Provide safe fallbacks so variables always exist
     o = h = v = np_
     tc = 0
     probs = [0.0] * (len(disease_names) if disease_names else 46)
-    
-    # 2. Safely attempt model inference
-    try:
-        if model is not None:
+
+    # 2. Check if model is loaded before running inference
+    if model is not None:
+        with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
             tensor, probs = run_inference(np_, model, config, device)
             o, h, v, tc = apply_gradcam(tensor, model, device, np_)
-        else:
-            print("WARNING: Model weights missing on cloud. Bypassing inference to render UI.")
-    except Exception as e:
-        print(f"WARNING: Inference execution failed: {str(e)}")
-        
-    # 3. Push data to HTML template
+    else:
+        st.error("⚠️ Model weights (`ocunet_best.pth`) not found. Please verify your Git LFS configuration on GitHub.")
+
+    # 3. Build dictionary safely
     RD = {
         "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
         "probs": [float(p) for p in probs],
