@@ -20,8 +20,7 @@ st.markdown("""
 <style>
 #MainMenu,footer,header,.stDeployButton,[data-testid="stToolbar"],
 [data-testid="stHeader"],section[data-testid="stSidebar"],
-div[data-testid="stNotification"],[data-baseweb="notification"],
-.stAlert{display:none!important}
+div[data-testid="stNotification"],[data-baseweb="notification"],{display:none!important}
 [data-testid="stMainBlockContainer"],[data-testid="stAppViewContainer"],
 .block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
 .stApp{background:#0a0d14!important;overflow:hidden!important}
