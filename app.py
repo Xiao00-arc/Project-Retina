@@ -28,14 +28,6 @@ div[data-testid="stNotification"],[data-baseweb="notification"],
 iframe{border:none!important; position:fixed!important; top:0!important; left:0!important; height:100vh!important; width:100vw!important; z-index:9999!important; display:block!important;}
 [data-testid="stFileUploader"]{position:absolute;opacity:0.01;width:1px;height:1px;overflow:hidden;z-index:-1}
 
-/* Hide the native uploader safely without breaking React's event listeners */
-[data-testid="stFileUploader"] {
-    position: fixed !important;
-    top: -9999px !important;
-    left: -9999px !important;
-    opacity: 0 !important;
-    z-index: -1 !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -117,28 +109,29 @@ auc_val = f"{report['overall']['macro_auc']:.3f}" if report else "0.918"
 f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
-# Hidden native uploader triggered dynamically by JS
-uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
+# --- NATIVE FILE UPLOADER (Clean & Visible) ---
+# This renders a native Streamlit file picker that won't trigger ClientDisconnect errors
+uploaded = st.file_uploader("📂 Upload Retinal Fundus Photograph (JPG, PNG)", type=["jpg", "jpeg", "png"], key="fu")
 
 RD = {}
 if uploaded is not None:
     pil = Image.open(uploaded).convert("RGB")
     np_ = np.array(pil)
     
-    # 1. Provide safe fallbacks so variables always exist
+    # Safe fallbacks
     o = h = v = np_
     tc = 0
     probs = [0.0] * (len(disease_names) if disease_names else 46)
 
-    # 2. Check if model is loaded before running inference
+    # Run inference if model is loaded
     if model is not None:
         with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
             tensor, probs = run_inference(np_, model, config, device)
             o, h, v, tc = apply_gradcam(tensor, model, device, np_)
     else:
-        st.error("⚠️ Model weights (`ocunet_best.pth`) not found. Please verify your Git LFS configuration on GitHub.")
+        st.error("⚠️ Model weights (`ocunet_best.pth`) not found.")
 
-    # 3. Build dictionary safely
+    # Build data payload for your HTML template
     RD = {
         "ob": to_b64(o), "hb": to_b64(h), "vb": to_b64(v),
         "probs": [float(p) for p in probs],
