@@ -1,35 +1,37 @@
 """
-app.py — OcuNet v4 | Native Streamlit Clinical Dashboard
+app.py — OcuNet v4 | Bold Clinical Dashboard + Theme Toggle
+streamlit run app.py
 """
 import sys, json, base64, numpy as np
 from pathlib import Path
 from io import BytesIO
 import cv2, torch
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
+
 
 sys.path.insert(0, str(Path(__file__).parent))
 from src.model.ocunet import build_model
 from src.dataset.loader import load_config, load_label_map, get_transforms
 from src.gradcam import GradCAM
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="OcuNet Diagnostics", 
-    page_icon="🔬",
-    layout="wide", 
-    initial_sidebar_state="collapsed"
-)
-
-# --- CUSTOM STYLING ---
+st.set_page_config(page_title="OcuNet", page_icon="🔬",
+                   layout="wide", initial_sidebar_state="collapsed")
 st.markdown("""
 <style>
-    .main { background-color: #0a0d14; }
-    .stMetric { background-color: rgba(255, 255, 255, 0.03); padding: 12px; border-radius: 8px; border: 1px solid #252b40; }
+#MainMenu,footer,header,.stDeployButton,[data-testid="stToolbar"],
+[data-testid="stHeader"],section[data-testid="stSidebar"],
+div[data-testid="stNotification"],[data-baseweb="notification"],
+.stAlert{display:none!important}
+[data-testid="stMainBlockContainer"],[data-testid="stAppViewContainer"],
+.block-container{padding:0!important;max-width:100%!important;overflow:hidden!important}
+.stApp{background:#0a0d14!important;overflow:hidden!important}
+iframe{border:none!important; position:fixed!important; top:0!important; left:0!important; height:100vh!important; width:100vw!important; z-index:9999!important; display:block!important;}
+/* [data-testid="stFileUploader"]{position:absolute;opacity:0;pointer-events:none} */
 </style>
 """, unsafe_allow_html=True)
 
-# --- CACHED LOADERS ---
 @st.cache_resource
 def load_model_cached():
     config    = load_config("configs/config.yaml")
@@ -81,114 +83,742 @@ def apply_gradcam(tensor, model, device, image_np, size=460):
     ov   = (orig*0.52 + hr*0.48).astype(np.uint8)
     return orig, hr, ov, tc
 
-# Load resources
+def to_b64(img):
+    buf = BytesIO()
+    Image.fromarray(img.astype(np.uint8)).save(buf, format="JPEG", quality=91)
+    return base64.b64encode(buf.getvalue()).decode()
+
+def file_b64(p):
+    with open(p,"rb") as f: return base64.b64encode(f.read()).decode()
+
 model, config, disease_names, ckpt, device = load_model_cached()
 report  = load_eval_report()
 auc_val = f"{report['overall']['macro_auc']:.3f}" if report else "0.918"
 f1_val  = f"{report['overall']['macro_f1']:.3f}"  if report else "0.261"
 n_test  = str(report['overall']['n_samples'])      if report else "1088"
 
-# --- APP HEADER ---
-col_h1, col_h2 = st.columns([4, 1])
-with col_h1:
-    st.title("👁️ OcuNet Diagnostics Platform")
-    st.markdown("Intelligent Retinal AI & Multi-Label Classification Research Workspace")
-with col_h2:
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.caption("🟢 MODEL ONLINE · v1.0")
+# Native file uploader outside the hidden iframe wall
+# --- NATIVE STREAMLIT FILE UPLOADER & INFERENCE ENGINE ---
+uploaded = st.file_uploader("Upload Retinal Fundus Photograph", type=["jpg", "jpeg", "png"], key="fu")
 
-st.markdown("---")
-
-# --- NATIVE TABS ---
-tab_diag, tab_perf, tab_arch = st.tabs(["📊 Diagnosis & Analysis", "📈 Performance & Metrics", "⚙️ Architecture"])
-
-with tab_diag:
-    col_left, col_right = st.columns([1, 1.2], gap="large")
+if uploaded is not None and model is not None:
+    pil = Image.open(uploaded).convert("RGB")
+    np_ = np.array(pil)
     
-    with col_left:
-        st.subheader("🔬 Fundus Photograph")
-        uploaded = st.file_uploader("Upload Retinal Scan (JPG, PNG)", type=["jpg", "jpeg", "png"], key="fu")
+    with st.spinner("Running EfficientNet inference & Grad-CAM localization..."):
+        tensor, probs = run_inference(np_, model, config, device)
+        o, h, v, tc = apply_gradcam(tensor, model, device, np_)
         
-        if uploaded is not None:
-            pil_img = Image.open(uploaded).convert("RGB")
-            st.image(pil_img, caption=f"Loaded: {uploaded.name} ({pil_img.size[0]}x{pil_img.size[1]}px)", use_column_width=True)
-        else:
-            st.info("👈 Upload an image to initialize the EfficientNet evaluation pipeline.")
-
-    with col_right:
-        st.subheader("📊 Diagnostic Results & Heatmaps")
-        
-        if uploaded is not None:
-            if model is None:
-                st.error("⚠️ Model weights (`ocunet_best.pth`) could not be loaded. Please check your model path.")
-            else:
-                try:
-                    np_img = np.array(pil_img)
-                    with st.spinner("Executing EfficientNet inference & Grad-CAM localization..."):
-                        tensor, probs = run_inference(np_img, model, config, device)
-                        orig, heat, overlay, tc = apply_gradcam(tensor, model, device, np_img)
-                        
-                    top_disease = disease_names.get(tc, "Unknown")
-                    st.success(f"**Top Primary Diagnosis:** {top_disease}")
-                    
-                    # Display Grad-CAM grid
-                    st.markdown("### 🔥 Grad-CAM Attention Maps")
-                    sub_c1, sub_c2, sub_c3 = st.columns(3)
-                    with sub_c1:
-                        st.image(orig, caption="Preprocessed Input", use_column_width=True)
-                    with sub_c2:
-                        st.image(heat, caption="Attention Map", use_column_width=True)
-                    with sub_c3:
-                        st.image(overlay, caption="Superimposed Overlay", use_column_width=True)
-                        
-                    # Probability breakdown
-                    st.markdown("### 📋 Disease Probability Ranking")
-                    sorted_preds = sorted(enumerate(probs), key=lambda x: x[1], reverse=True)[:10]
-                    for idx, p in sorted_preds:
-                        d_name = disease_names.get(idx, f"Class {idx}")
-                        st.progress(float(p), text=f"{d_name}: {p * 100:.1f}%")
-                        
-                except Exception as e:
-                    st.error(f"Error during inference execution: {str(e)}")
-        else:
-            st.warning("Awaiting retinal input stream...")
-
-with tab_perf:
-    st.subheader("Model Performance Evaluation")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Macro AUC", auc_val)
-    m2.metric("Macro F1", f1_val)
-    m3.metric("Test Samples", n_test)
-    m4.metric("Target Classes", len(disease_names) if disease_names else 46)
+    # Create a clean two-column layout for native display
+    col_img, col_res = st.columns(2, gap="large")
     
-    st.markdown("---")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Loss & AUC Curves (29 Epochs)**")
-        curve_path = Path("outputs/training_curves.png")
-        if curve_path.exists():
-            st.image(str(curve_path), use_column_width=True)
-        else:
-            st.info("Training curves chart not found in outputs/")
-    with c2:
-        st.markdown("**Per-Disease AUC (Test Set)**")
-        auc_path = Path("outputs/per_disease_auc.png")
-        if auc_path.exists():
-            st.image(str(auc_path), use_column_width=True)
-        else:
-            st.info("Per-disease AUC chart not found in outputs/")
+    with col_img:
+        st.markdown("### 📷 Input Fundus Image")
+        st.image(pil, caption=uploaded.name, use_column_width=True)
+        
+        # If Grad-CAM heatmap array 'h' is generated, display it
+        if h is not None:
+            st.markdown("### 🔥 Grad-CAM Attention Map")
+            st.image(h, caption="Disease Localization Heatmap", use_column_width=True)
+            
+    with col_res:
+        st.markdown("### 📊 Diagnostic Results")
+        top_disease = disease_names.get(tc, "Unknown")
+        st.success(f"**Top Classification:** {top_disease}")
+        
+        st.markdown("#### Class Probability Breakdown:")
+        for idx, prob in enumerate(probs):
+            if prob > 0.05:  # Filter low probabilities for readability
+                disease_label = disease_names.get(idx, f"Class {idx}")
+                st.progress(float(prob), text=f"{disease_label}: {prob * 100:.1f}%")
+else:
+    if uploaded is None:
+        st.info("👈 Please upload a retinal fundus image using the uploader above to begin analysis.")
+if 'RD' not in locals():
+    RD = {}
+cb = file_b64("outputs/training_curves.png") if Path("outputs/training_curves.png").exists() else ""
+ab = file_b64("outputs/per_disease_auc.png") if Path("outputs/per_disease_auc.png").exists() else ""
+rj = json.dumps(RD)
+hr = "true" if RD else "false"
+ob = RD.get("ob","")
+hb = RD.get("hb","")
+vb = RD.get("vb","")
+td = RD.get("td","Unknown")
+fn = RD.get("fn","—")
+fs = RD.get("fs","—")
+dm = RD.get("dim","—")
 
-with tab_arch:
-    st.subheader("Technical Specification & Architecture")
-    a1, a2 = st.columns(2)
-    with a1:
-        st.markdown("### 01 · Model & Training")
-        st.markdown("- **Backbone:** EfficientNet Architecture")
-        st.markdown("- **Optimizer:** Adam (lr=1e-4) with ReduceLROnPlateau")
-        st.markdown("- **Loss Function:** BCEWithLogitsLoss")
-        st.markdown("- **Hardware:** PyTorch CUDA Backend")
-    with a2:
-        st.markdown("### 02 · Data & Explainability")
-        st.markdown("- **Datasets:** ODIR-5K, RFMiD, JSIEC")
-        st.markdown("- **Preprocessing:** CLAHE Contrast Limited Adaptive Histogram Equalization")
-        st.markdown("- **Explainability:** Grad-CAM Attention Maps with Bilateral Edge Sharpening")
+HTML = f"""<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8"/>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.1/jspdf.plugin.autotable.min.js"></script>
+<style>
+/* ── TOKENS ── */
+[data-theme="dark"]{{
+  --bg0:#0a0d14;--bg1:#111520;--bg2:#171c2e;--bg3:#1e2438;
+  --bd:#252b40;--bd2:#2e3650;
+  --tx:#e8edf5;--tx2:#8b94b0;--tx3:#4a5568;
+  --ac:#2563eb;--acr:37,99,235;--cy:#0891b2;--gr:#059669;
+}}
+[data-theme="light"]{{
+  --bg0:#eef1f8;--bg1:#ffffff;--bg2:#f4f6fc;--bg3:#e8ecf5;
+  --bd:#d8dded;--bd2:#c4cade;
+  --tx:#0f172a;--tx2:#475569;--tx3:#94a3b8;
+  --ac:#2563eb;--acr:37,99,235;--cy:#0891b2;--gr:#059669;
+}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+html,body{{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg0);color:var(--tx);font-size:17px;transition:background .2s,color .2s;overflow:hidden}}
+
+/* ── TOPBAR ── */
+.top{{height:58px;background:var(--bg1);border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;padding:0 1.5rem;flex-shrink:0;position:relative;z-index:10}}
+.brand{{display:flex;align-items:center;gap:10px}}
+.bi{{width:36px;height:36px;border-radius:9px;background:var(--ac);display:grid;place-items:center;font-weight:800;font-size:.9rem;color:#fff;font-family:'IBM Plex Mono',monospace;flex-shrink:0}}
+.bn{{font-size:1.15rem;font-weight:800;color:var(--tx);letter-spacing:-.03em;font-family:'IBM Plex Mono',monospace}}
+.bt{{font-size:.62rem;color:var(--tx3);font-family:'IBM Plex Mono',monospace;letter-spacing:.1em;text-transform:uppercase;margin-top:1px}}
+.top-r{{display:flex;align-items:center;gap:.7rem}}
+.sdot{{width:6px;height:6px;border-radius:50%;background:var(--gr);box-shadow:0 0 5px var(--gr)}}
+.stxt{{font-size:.75rem;color:var(--tx3);font-family:'IBM Plex Mono',monospace}}
+.tbtn{{width:30px;height:30px;border-radius:6px;border:1px solid var(--bd);background:var(--bg2);cursor:pointer;display:grid;place-items:center;font-size:.9rem;color:var(--tx);transition:.15s}}
+.tbtn:hover{{background:var(--bg3);border-color:var(--ac)}}
+.vtag{{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--ac);border:1px solid rgba(var(--acr),.3);background:rgba(var(--acr),.06);padding:3px 9px;border-radius:4px;font-weight:500;letter-spacing:.06em}}
+
+/* ── ROOT LAYOUT ── */
+.root{{display:flex;height:calc(100vh - 58px)}}
+
+/* ── LEFT PANEL ── */
+.left-panel{{
+  width:42%;flex-shrink:0;
+  display:flex;flex-direction:column;
+  border-right:1px solid var(--bd);
+  background:var(--bg1);
+  overflow:hidden;
+}}
+
+/* ── RIGHT PANEL ── */
+.right-panel{{
+  flex:1;display:flex;flex-direction:column;
+  background:var(--bg0);overflow:hidden;
+}}
+
+/* ── PANEL HEADER ── */
+.ph{{
+  height:36px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 1rem;border-bottom:1px solid var(--bd);
+  background:var(--bg2);
+}}
+.ph-l{{display:flex;align-items:center;gap:6px}}
+.phdot{{width:4px;height:4px;border-radius:50%;background:var(--ac)}}
+.phtitle{{font-size:.72rem;font-weight:600;color:var(--tx2);text-transform:uppercase;letter-spacing:.12em;font-family:'IBM Plex Mono',monospace}}
+.ph-r{{font-size:.7rem;color:var(--tx3);font-family:'IBM Plex Mono',monospace}}
+
+/* ── IMAGE SECTION (top half of left) ── */
+.img-section{{
+  flex:1;min-height:0;
+  display:flex;flex-direction:column;
+  border-bottom:1px solid var(--bd);
+  overflow:hidden;
+}}
+.img-body{{
+  flex:1;min-height:0;
+  display:flex;align-items:center;justify-content:center;
+  background:#05080f;padding:.8rem;overflow:hidden;
+}}
+.img-body img{{
+  max-width:100%;max-height:100%;
+  object-fit:contain;border-radius:8px;display:block;
+}}
+.img-foot{{
+  height:32px;flex-shrink:0;
+  display:flex;align-items:center;gap:.6rem;
+  padding:0 1rem;border-top:1px solid var(--bd);
+  background:var(--bg2);
+}}
+.mc{{font-family:'IBM Plex Mono',monospace;font-size:.72rem;color:var(--tx3);background:var(--bg3);border:1px solid var(--bd);padding:1px 6px;border-radius:3px}}
+.new-btn{{margin-left:auto;font-size:.73rem;color:var(--ac);font-weight:600;border:1px solid rgba(var(--acr),.3);padding:2px 10px;border-radius:4px;background:rgba(var(--acr),.07);cursor:pointer;white-space:nowrap}}
+.new-btn:hover{{background:rgba(var(--acr),.14)}}
+
+/* ── HEATMAP SECTION (bottom half of left) ── */
+.hm-section{{
+  height:42%;flex-shrink:0;
+  display:flex;flex-direction:column;
+  overflow:hidden;
+}}
+.hm-body{{
+  flex:1;min-height:0;
+  display:grid;grid-template-columns:1fr 1fr 1fr;
+  gap:1px;background:var(--bd);overflow:hidden;
+}}
+.hm-cell{{
+  background:var(--bg1);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+}}
+.hm-img-wrap{{
+  flex:1;min-height:0;
+  background:#05080f;
+  display:flex;align-items:center;justify-content:center;
+  overflow:hidden;
+}}
+.hm-img-wrap img{{
+  max-width:100%;max-height:100%;
+  object-fit:contain;display:block;
+}}
+.hm-ft{{
+  flex-shrink:0;height:34px;
+  padding:0 10px;
+  display:flex;flex-direction:column;justify-content:center;
+  border-top:1px solid var(--bd);
+  background:var(--bg2);
+}}
+.hm-ft-t{{font-size:.8rem;font-weight:600;color:var(--tx);font-family:'IBM Plex Mono',monospace}}
+.hm-ft-s{{font-size:.7rem;color:var(--tx3);margin-top:1px}}
+
+/* ── UPLOAD ZONE ── */
+.drop{{
+  flex:1;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  border:2px dashed var(--bd2);border-radius:10px;
+  margin:.8rem;cursor:pointer;transition:.2s;
+  background:rgba(var(--acr),.02);text-align:center;
+  padding:1.5rem;
+}}
+.drop:hover{{border-color:var(--ac);background:rgba(var(--acr),.05)}}
+.drop-ic{{font-size:2rem;margin-bottom:.6rem}}
+.drop-t{{font-size:.88rem;font-weight:600;color:var(--tx);margin-bottom:.3rem}}
+.drop-s{{font-size:.84rem;color:var(--tx3)}}
+.drop-btn{{display:inline-block;margin-top:.8rem;font-size:.82rem;color:var(--ac);font-weight:600;border:1px solid rgba(var(--acr),.35);padding:5px 14px;border-radius:5px;background:rgba(var(--acr),.08);cursor:pointer}}
+
+/* ── RIGHT: DIAGNOSIS ── */
+.diag-section{{
+  flex:1;min-height:0;overflow-y:auto;
+  padding:1rem;
+  border-bottom:1px solid var(--bd);
+}}
+.empty-state{{color:var(--tx3);font-size:.9rem;text-align:center;margin-top:4rem}}
+.badge{{display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:6px;font-size:.9rem;font-weight:500;margin:2px;border:1px solid}}
+.badge.pos{{background:rgba(var(--acr),.1);border-color:rgba(var(--acr),.3);color:#93c5fd}}
+.badge.norm{{background:rgba(5,150,105,.08);border-color:rgba(5,150,105,.3);color:#6ee7b7}}
+.badge.warn{{background:rgba(217,119,6,.08);border-color:rgba(217,119,6,.3);color:#fcd34d}}
+.bdot{{width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0}}
+.bpct{{font-family:'IBM Plex Mono',monospace;font-weight:700;margin-left:3px}}
+.rank-title{{font-size:.72rem;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.1em;margin:1rem 0 .5rem;font-family:'IBM Plex Mono',monospace}}
+.cb{{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--bd)}}
+.cb:last-child{{border:none}}
+.cbn{{font-size:.84rem;color:var(--tx2);width:165px;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.cbt{{flex:1;height:3px;background:var(--bg3);border-radius:2px;overflow:hidden}}
+.cbf{{height:3px;border-radius:2px}}
+.cbp{{font-family:'IBM Plex Mono',monospace;font-size:.78rem;color:var(--tx3);width:28px;text-align:right}}
+.cbi{{width:5px;height:5px;border-radius:50%;flex-shrink:0}}
+
+/* ── RIGHT: CONTROLS ── */
+.ctrl-section{{
+  flex-shrink:0;padding:.8rem 1rem;
+  border-bottom:1px solid var(--bd);
+  background:var(--bg1);
+}}
+.ctrl-r{{display:flex;flex-direction:column;gap:.4rem;margin-bottom:.6rem}}
+.ctrl-h{{display:flex;justify-content:space-between}}
+.ctrl-l{{font-size:.72rem;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em}}
+.ctrl-v{{font-family:'IBM Plex Mono',monospace;font-size:.8rem;color:var(--ac);font-weight:600}}
+input[type=range]{{-webkit-appearance:none;width:100%;height:2px;background:var(--bd2);border-radius:2px;outline:none;cursor:pointer}}
+input[type=range]::-webkit-slider-thumb{{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--ac);cursor:pointer;border:2px solid var(--bg1)}}
+.togs{{display:flex;gap:1.2rem}}
+.tr{{display:flex;align-items:center;gap:6px}}
+.tl{{font-size:.84rem;color:var(--tx2)}}
+.tog{{position:relative;width:30px;height:16px}}
+.tog input{{opacity:0;width:0;height:0}}
+.ts{{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--bd2);border-radius:16px;cursor:pointer;transition:.2s}}
+.ts::before{{content:'';position:absolute;width:10px;height:10px;left:2px;top:2px;background:var(--tx3);border-radius:50%;transition:.2s}}
+input:checked+.ts{{background:rgba(var(--acr),.2);border-color:var(--ac)}}
+input:checked+.ts::before{{transform:translateX(14px);background:var(--ac)}}
+
+/* ── RIGHT: STATS (bottom) ── */
+.stats-section{{
+  flex-shrink:0;
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:0;background:var(--bd);
+  width:100%;
+}}
+.stat-cell{{
+  background:var(--bg1);padding:.8rem 1.2rem;
+  position:relative;overflow:hidden;
+  border-right:1px solid var(--bd);
+}}
+.stat-cell:last-child{{border-right:none}}
+.stat-v{{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;font-weight:700;color:var(--tx);line-height:1}}
+.stat-l{{font-size:.72rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-top:4px;font-weight:500}}
+
+/* ── NAV TABS ── */
+.tabs{{display:flex;gap:0;border-bottom:1px solid var(--bd);background:var(--bg1);flex-shrink:0}}
+.tab{{padding:.6rem 1.2rem;font-size:.82rem;font-weight:600;color:var(--tx3);cursor:pointer;border-bottom:2px solid transparent;transition:.15s;letter-spacing:.04em;text-transform:uppercase;font-family:'IBM Plex Mono',monospace}}
+.tab:hover{{color:var(--tx2)}}
+.tab.on{{color:var(--ac);border-bottom-color:var(--ac)}}
+
+/* ── PERF / ARCH VIEWS ── */
+.view {{
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem;
+    height: 100%;
+}}
+.sec-tag{{font-size:.72rem;font-weight:600;color:var(--ac);text-transform:uppercase;letter-spacing:.14em;margin-bottom:.3rem;font-family:'IBM Plex Mono',monospace}}
+.sec-title{{font-size:1.2rem;font-weight:700;color:var(--tx);letter-spacing:-.02em;margin-bottom:.8rem}}
+.metrics-g{{display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;margin-bottom:1rem}}
+.mtile{{background:var(--bg1);border:1px solid var(--bd);border-radius:10px;padding:1rem;position:relative;overflow:hidden}}
+.mtile::before{{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--ac),var(--cy))}}
+.mtile-v{{font-family:'IBM Plex Mono',monospace;font-size:1.4rem;font-weight:600;color:var(--tx);line-height:1}}
+.mtile-l{{font-size:.72rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-top:4px}}
+.chart-img{{width:100%;border-radius:7px;border:1px solid var(--bd);display:block}}
+.arch-t{{font-size:.72rem;font-weight:600;color:var(--ac);text-transform:uppercase;letter-spacing:.1em;margin-bottom:.4rem;font-family:'IBM Plex Mono',monospace;display:flex;align-items:center;gap:6px}}
+.arch-t::after{{content:'';flex:1;height:1px;background:var(--bd)}}
+.arch-i{{font-size:.84rem;color:var(--tx2);padding:4px 0;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:7px}}
+.arch-i::before{{content:'';width:3px;height:3px;background:var(--ac);border-radius:50%;flex-shrink:0}}
+/* ── REPORT UI ── */
+.report-section {{
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--bd);
+}}
+.rp-grid {{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}}
+.rp-input {{
+  width: 100%;
+  background: var(--bg1);
+  border: 1px solid var(--bd);
+  color: var(--tx);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 0.85rem;
+  outline: none;
+}}
+.rp-input:focus {{ border-color: var(--ac); }}
+textarea.rp-input {{ resize: vertical; min-height: 60px; }}
+.btn-dl {{
+  width: 100%;
+  background: var(--ac);
+  color: #ffffff;
+  border: none;
+  padding: 11px;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: 0.2s;
+  box-shadow: 0 2px 6px rgba(var(--acr), 0.25);
+}}
+.btn-dl:hover {{
+  filter: brightness(1.1);
+  box-shadow: 0 4px 12px rgba(var(--acr), 0.35);
+}}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="top">
+  <div class="brand">
+    <div class="bi">Oc</div>
+    <div>
+      <div class="bn">OcuNet Diagnostics</div>
+      <div class="bt">Intelligent Retinal AI Platform</div>
+    </div>
+  </div>
+  <div class="top-r">
+    <div class="sdot"></div><span class="stxt">MODEL ONLINE</span>
+    <button class="tbtn" onclick="toggleTheme()" id="tbtn">🌙</button>
+    <div class="vtag">RESEARCH BUILD v1.0</div>
+  </div>
+</div>
+
+<!-- ROOT -->
+<div class="root">
+
+  <!-- ══ LEFT PANEL ══ -->
+  <div class="left-panel">
+
+    <!-- Image section -->
+    <div class="img-section" id="img-section">
+      <div class="ph">
+        <div class="ph-l"><div class="phdot"></div><span class="phtitle">Fundus Image</span></div>
+        <span class="ph-r" id="img-info">No image loaded</span>
+      </div>
+
+      <!-- Upload state -->
+      <div class="drop" id="drop-zone" onclick="trigUp()">
+        <div class="drop-ic">🔬</div>
+        <div class="drop-t">Upload Fundus Photograph</div>
+        <div class="drop-s">JPG or PNG · Min 224×224px · Max 200MB</div>
+        <div class="drop-btn">Choose File →</div>
+        <div style="margin-top:.6rem;font-size:.65rem;color:var(--tx3)">Test: data/raw/ODIR-5K/</div>
+      </div>
+
+      <!-- Result state -->
+      <div class="img-body" id="img-body" style="display:none">
+        <img id="orig-img" src="" alt="fundus"/>
+      </div>
+      <div class="img-foot" id="img-foot" style="display:none">
+        <span class="mc" id="fn-c">—</span>
+        <span class="mc" id="dim-c">—</span>
+        <span class="mc" id="fs-c">—</span>
+        <span class="new-btn" onclick="trigUp()">↑ New Image</span>
+      </div>
+    </div>
+
+    <!-- Heatmap section -->
+    <div class="hm-section" id="hm-section">
+      <div class="ph">
+        <div class="ph-l"><div class="phdot"></div><span class="phtitle">Grad-CAM · Attention Maps</span></div>
+        <span class="ph-r">Red/yellow = high attention</span>
+      </div>
+      <div class="hm-body" id="hm-empty-state" style="display:flex;align-items:center;justify-content:center;background:var(--bg1)">
+        <span style="color:var(--tx3);font-size:.78rem">Heatmaps appear after upload</span>
+      </div>
+      <div class="hm-body" id="hm-grid" style="display:none">
+        <div class="hm-cell">
+          <div class="hm-img-wrap"><img id="hm-o" src="" alt="orig"/></div>
+          <div class="hm-ft"><div class="hm-ft-t">Original</div><div class="hm-ft-s">Pre-processed input</div></div>
+        </div>
+        <div class="hm-cell">
+          <div class="hm-img-wrap"><img id="hm-h" src="" alt="heatmap"/></div>
+          <div class="hm-ft"><div class="hm-ft-t">Attention Map</div><div class="hm-ft-s" id="hm-cls">—</div></div>
+        </div>
+        <div class="hm-cell">
+          <div class="hm-img-wrap"><img id="hm-v" src="" alt="overlay"/></div>
+          <div class="hm-ft"><div class="hm-ft-t">Overlay</div><div class="hm-ft-s">Superimposed</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══ RIGHT PANEL ══ -->
+  <div class="right-panel">
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <div class="tab on" onclick="switchTab('diagnosis',this)">Diagnosis</div>
+      <div class="tab" onclick="switchTab('performance',this)">Performance</div>
+      <div class="tab" onclick="switchTab('architecture',this)">Architecture</div>
+    </div>
+
+    <!-- ── DIAGNOSIS TAB ── -->
+    <div id="tab-diagnosis" style="display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden">
+
+      <!-- Controls -->
+      <div class="ctrl-section">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:.5rem">
+          <div class="ctrl-r">
+            <div class="ctrl-h"><span class="ctrl-l">Detection Threshold</span><span class="ctrl-v" id="tv">0.65</span></div>
+            <input type="range" min="0.40" max="0.90" step="0.05" value="0.65" id="tslider" oninput="document.getElementById('tv').textContent=parseFloat(this.value).toFixed(2);upd()">
+          </div>
+          <div class="ctrl-r">
+            <div class="ctrl-h"><span class="ctrl-l">Min Confidence Gate</span><span class="ctrl-v" id="gv">0.55</span></div>
+            <input type="range" min="0.30" max="0.80" step="0.05" value="0.55" id="gslider" oninput="document.getElementById('gv').textContent=parseFloat(this.value).toFixed(2);upd()">
+          </div>
+        </div>
+        <div class="togs">
+          <div class="tr"><label class="tog"><input type="checkbox" checked onchange="show('hm-section',this.checked)"><span class="ts"></span></label><span class="tl">Grad-CAM</span></div>
+          <div class="tr"><label class="tog"><input type="checkbox" checked onchange="show('cb-wrap',this.checked)"><span class="ts"></span></label><span class="tl">Confidence bars</span></div>
+        </div>
+      </div>
+
+      <!-- Diagnosis output -->
+      <div class="diag-section">
+        <div class="empty-state" id="diag-empty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:65vh; text-align:center; padding:2rem;">
+  <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.8;">👁️‍🗨️</div>
+  <div style="font-size: 1.1rem; font-weight: 600; color: var(--tx); margin-bottom: 0.4rem; letter-spacing:-0.01em;">Awaiting Retinal Fundus Image</div>
+  <div style="font-size: 0.85rem; color: var(--tx3); max-width: 320px; line-height: 1.4; margin-bottom: 1.5rem;">Upload an image on the left to initialize OcuNet multi-label classification and Grad-CAM attention localization.</div>
+  <div style="font-family:'IBM Plex Mono',monospace; font-size:0.7rem; color:var(--ac); background:rgba(var(--acr),0.08); border:1px solid rgba(var(--acr),0.2); padding:4px 12px; border-radius:4px; letter-spacing:0.06em;">SYSTEM READY · 46 CLASSES</div>
+</div>  
+        <div id="diag-result" style="display:none">
+          <div id="chips"></div>
+          <div id="cb-wrap">
+            <div class="rank-title">Disease Probability Ranking</div>
+            <div id="cbars"></div>
+          </div>
+          
+         <!-- NEW: REPORT GENERATION UI -->
+          <div class="report-section">
+            <div class="rank-title">📄 Clinical Report Generation</div>
+            <div class="rp-grid">
+              <input type="text" id="rp-patient" class="rp-input" placeholder="Patient ID / MRN" />
+              <select id="rp-eye" class="rp-input">
+                <option value="OD (Right Eye)">OD (Right Eye)</option>
+                <option value="OS (Left Eye)">OS (Left Eye)</option>
+                <option value="Bilateral">Bilateral</option>
+                <option value="Unknown">Unknown</option>
+              </select>
+            </div>
+            <textarea id="rp-notes" class="rp-input" placeholder="Doctor's Clinical Notes (Optional)"></textarea>
+            <button class="btn-dl" onclick="triggerPDF()" style="margin-top:0.8rem;">
+              📋 DOWNLOAD REPORT
+            </button>
+          </div>
+          <!-- END NEW UI -->
+
+        </div>
+      </div>
+    </div> <!-- <--- ADD THIS CLOSING TAG RIGHT HERE TO CLOSE tab-diagnosis -->
+
+    <!-- ── PERFORMANCE TAB ── -->
+    <div id="tab-performance" class="view view-hidden" style="display:none;">
+      <div class="sec-tag">Evaluation Results</div>
+      <div class="sec-title">Model Performance</div>
+      <div class="metrics-g">
+        <div class="mtile"><div class="mtile-v">{auc_val}</div><div class="mtile-l">Macro AUC</div></div>
+        <div class="mtile"><div class="mtile-v">{f1_val}</div><div class="mtile-l">Macro F1</div></div>
+        <div class="mtile"><div class="mtile-v">{n_test}</div><div class="mtile-l">Test Images</div></div>
+        <div class="mtile"><div class="mtile-v">25</div><div class="mtile-l">Diseases</div></div>
+      </div>
+      
+      <!-- Charts Block -->
+      <div style="margin-bottom:.8rem">
+        <div style="font-size:.6rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;font-family:IBM Plex Mono,monospace">Loss &amp; AUC Curves · 29 Epochs</div>
+        {"<img class='chart-img' src='data:image/png;base64," + cb + "' alt='curves'/>" if cb else ""}
+      </div>
+      <div>
+        <div style="font-size:.6rem;color:var(--tx3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;font-family:IBM Plex Mono,monospace">Per-Disease AUC · Test Set</div>
+        {"<img class='chart-img' src='data:image/png;base64," + ab + "' alt='auc'/>" if ab else ""}
+      </div>
+    </div>
+
+    <!-- ── ARCHITECTURE TAB ── -->
+    <div id="tab-architecture" class="view view-hidden" style="display:none;">
+      <div class="sec-tag">Technical Specification</div>
+      <div class="sec-title">System Architecture</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.2rem">
+        <div>
+          <div style="margin-bottom:1rem"><div class="arch-t">01 · Model</div><div class="arch-i">EfficientNet-B0 backbone</div><div class="arch-i">Pretrained on ImageNet-1K</div><div class="arch-i">Custom FC classifier head</div><div class="arch-i">Dropout + BatchNorm</div><div class="arch-i">BCEWithLogitsLoss</div></div>
+          <div><div class="arch-t">02 · Training</div><div class="arch-i">Adam (lr=1e-4)</div><div class="arch-i">ReduceLROnPlateau</div><div class="arch-i">Mixed precision AMP</div><div class="arch-i">Early stopping (p=8)</div><div class="arch-i">Batch 16 · RTX 3050 4GB</div></div>
+        </div>
+        <div>
+          <div style="margin-bottom:1rem"><div class="arch-t">03 · Data Pipeline</div><div class="arch-i">ODIR-5K · 6,392 images</div><div class="arch-i">RFMiD · 490 images</div><div class="arch-i">JSIEC · 367 images</div><div class="arch-i">CLAHE preprocessing</div><div class="arch-i">Weighted random sampler</div></div>
+          <div><div class="arch-t">04 · Explainability</div><div class="arch-i">Grad-CAM heatmaps</div><div class="arch-i">Bilateral edge sharpening</div><div class="arch-i">Per-class attention maps</div><div class="arch-i">46-class multi-label output</div><div class="arch-i">Confidence calibration</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const D={rj};
+const dn=D.dn||[];
+const pr=D.probs||[];
+const HR={hr};
+applyStoredTheme();
+
+function toggleTheme(){{
+  const h=document.documentElement;
+  const d=h.getAttribute('data-theme')==='dark';
+  const next=d?'light':'dark';
+  h.setAttribute('data-theme',next);
+  document.getElementById('tbtn').textContent=next==='dark'?'🌙':'☀️';
+  try{{localStorage.setItem('ocunet-theme',next);}}catch(e){{}}
+}}
+function applyStoredTheme(){{
+  try{{
+    const t=localStorage.getItem('ocunet-theme')||'light';
+    document.documentElement.setAttribute('data-theme',t);
+    document.getElementById('tbtn').textContent=t==='dark'?'🌙':'☀️';
+  }}catch(e){{}}
+}}
+
+function switchTab(name, el) {{
+  // Update button highlights
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  if(el) el.classList.add('on');
+
+  // Grab the tab containers
+  const diagTab = document.getElementById('tab-diagnosis');
+  const perfTab = document.getElementById('tab-performance');
+  const archTab = document.getElementById('tab-architecture');
+
+  // Hide all explicitly using inline styles & classes
+  diagTab.style.display = 'none';
+  perfTab.style.display = 'none';
+  archTab.style.display = 'none';
+  
+  perfTab.classList.add('view-hidden');
+  archTab.classList.add('view-hidden');
+
+  // Show only the requested one
+  if (name === 'diagnosis') {{
+    diagTab.style.display = 'flex';
+  }} else if (name === 'performance') {{
+    perfTab.style.display = 'block';
+    perfTab.classList.remove('view-hidden');
+  }} else if (name === 'architecture') {{
+    archTab.style.display = 'block';
+    archTab.classList.remove('view-hidden');
+  }}
+}}
+
+function show(id,v){{const e=document.getElementById(id);if(e)e.style.display=v?'flex':'none'}}
+function thr(){{return Math.max(parseFloat(document.getElementById('tslider').value),parseFloat(document.getElementById('gslider').value))}}
+
+function upd(){{
+  if(!pr.length)return;
+  const t=thr();
+  const det=pr.map((p,i)=>[i,p]).filter(([,p])=>p>=t).sort((a,b)=>b[1]-a[1]);
+  const ch=document.getElementById('chips');
+  if(det.length){{
+    ch.innerHTML=det.map(([i,p])=>`<span class="badge pos"><span class="bdot"></span>${{dn[i]}}<span class="bpct">${{(p*100).toFixed(0)}}%</span></span>`).join('');
+    if(Math.max(...det.map(([,p])=>p))<0.75)ch.innerHTML+='<div style="margin-top:.5rem"><span class="badge warn">⚠ Low confidence — verify clinically</span></div>';
+  }}else{{
+    ch.innerHTML='<span class="badge norm"><span class="bdot"></span>Normal — No pathology detected</span>';
+  }}
+  const top=[...pr.map((p,i)=>[i,p])].sort((a,b)=>b[1]-a[1]).slice(0,10);
+  document.getElementById('cbars').innerHTML=top.map(([i,p])=>{{
+    const d=p>=t;
+    return `<div class="cb"><div class="cbn">${{(dn[i]||'').substring(0,26)}}</div><div class="cbt"><div class="cbf" style="width:${{(p*100).toFixed(1)}}%;background:${{d?'linear-gradient(90deg,#2563eb,#0891b2)':'var(--bg3)'}}"></div></div><div class="cbp">${{(p*100).toFixed(0)}}%</div><div class="cbi" style="background:${{d?'var(--ac)':'var(--bd2)'}}"></div></div>`;
+  }}).join('');
+}}
+
+function trigUp(){{
+  const el=window.parent.document.querySelector('[data-testid="stFileUploader"] input[type="file"]');
+  if(el){{el.style.cssText='display:block;opacity:0;position:absolute';el.click();}}
+}}
+function triggerPDF() {{
+  const {{ jsPDF }} = window.jspdf;
+  const doc = new jsPDF();
+  
+  // 1. Gather Inputs
+  const patientId = document.getElementById('rp-patient').value || "Unknown";
+  const eye = document.getElementById('rp-eye').value;
+  const notes = document.getElementById('rp-notes').value || "No additional clinical notes provided.";
+  
+  // 2. Header
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.setTextColor(0, 51, 102);
+  doc.text("OcuNet Diagnostics - Retinal Assessment Report", 14, 20);
+  
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(100, 100, 100);
+  doc.text("Generated on: " + new Date().toLocaleString() + " | Platform: Research Build v1.0", 14, 27);
+  doc.setDrawColor(0, 51, 102);
+  doc.line(14, 30, 196, 30);
+  
+  // 3. Metadata
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(0, 0, 0);
+  doc.text("Patient ID: ", 14, 40);
+  doc.setFont("helvetica", "normal");
+  doc.text(patientId, 38, 40);
+  
+  doc.setFont("helvetica", "bold");
+  doc.text("Eye Evaluated: ", 100, 40);
+  doc.setFont("helvetica", "normal");
+  doc.text(eye, 130, 40);
+  
+  // 4. Top 8 Findings Table
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(0, 51, 102);
+  doc.text("Diagnostic Findings (Top Probability Ranking)", 14, 52);
+  
+  // Grab predictions from your existing 'pr' (probabilities) and 'dn' (disease names) arrays
+  const topPreds = pr.map((p, i) => [dn[i], p]).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const tableBody = topPreds.map((arr, idx) => {{
+      const prob = arr[1];
+      const status = prob >= 0.65 ? "HIGH RISK" : (prob >= 0.30 ? "SUSPECT" : "LOW RISK");
+      return [(idx + 1).toString(), arr[0], (prob * 100).toFixed(1) + "%", status];
+  }});
+  
+  doc.autoTable({{
+      startY: 56,
+      head: [['Rank', 'Pathology / Condition', 'Confidence Score', 'Status Flag']],
+      body: tableBody,
+      theme: 'grid',
+      headStyles: {{ fillColor: [0, 51, 102] }},
+      styles: {{ fontSize: 9 }}
+  }});
+  
+  // 5. Visual Evidence (Images)
+  let finalY = doc.lastAutoTable.finalY || 56;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(0, 51, 102);
+  doc.text("Visual Interpretability (Grad-CAM Attention Overlay)", 14, finalY + 12);
+  
+  // Grab base64 image data straight from the HTML image tags
+  const origImg = document.getElementById('orig-img').src;
+  const overlayImg = document.getElementById('hm-v').src;
+  
+  if (origImg.length > 100) {{
+      doc.addImage(origImg, 'JPEG', 14, finalY + 16, 75, 75);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Original Fundus Image", 35, finalY + 95);
+  }}
+  if (overlayImg.length > 100) {{
+      doc.addImage(overlayImg, 'JPEG', 105, finalY + 16, 75, 75);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(0, 0, 0);
+      doc.text("Grad-CAM Disease Localization", 120, finalY + 95);
+  }}
+  
+  // 6. Doctor's Notes
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.setTextColor(0, 51, 102);
+  doc.text("Clinician Notes & Observations", 14, finalY + 107);
+  
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(50, 50, 50);
+  const splitNotes = doc.splitTextToSize(notes, 180);
+  doc.text(splitNotes, 14, finalY + 115);
+  
+  // 7. Disclaimer
+  doc.setFontSize(8);
+  doc.setTextColor(150, 150, 150);
+  doc.text("Disclaimer: OcuNet is an AI-assisted decision support system designed for retinal screening. This report", 14, 282);
+  doc.text("must be reviewed and verified by a licensed clinician prior to diagnostic or therapeutic action.", 14, 286);
+  
+  // 8. Download
+  doc.save("OcuNet_Report_" + patientId + ".pdf");
+}}
+if(HR){{
+  document.getElementById('drop-zone').style.display='none';
+  document.getElementById('img-body').style.display='flex';
+  document.getElementById('img-foot').style.display='flex';
+  document.getElementById('hm-empty-state').style.display='none';
+  document.getElementById('hm-grid').style.display='grid';
+  document.getElementById('diag-empty').style.display='none';
+  document.getElementById('diag-result').style.display='block';
+  document.getElementById('orig-img').src='data:image/jpeg;base64,{ob}';
+  document.getElementById('hm-o').src='data:image/jpeg;base64,{ob}';
+  document.getElementById('hm-h').src='data:image/jpeg;base64,{hb}';
+  document.getElementById('hm-v').src='data:image/jpeg;base64,{vb}';
+  document.getElementById('hm-cls').textContent='Class: {td}';
+  document.getElementById('fn-c').textContent='{fn}';
+  document.getElementById('dim-c').textContent='{dm}';
+  document.getElementById('fs-c').textContent='{fs}';
+  document.getElementById('img-info').textContent='{fn}';
+  upd();
+}}
+// Force hide non-default views on initial page load
+document.getElementById('tab-performance').classList.add('view-hidden');
+document.getElementById('tab-architecture').classList.add('view-hidden');
+</script>
+</script>
+</body></html>"""
+
+components.html(HTML, height=870, scrolling=False)
